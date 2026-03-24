@@ -1,0 +1,12 @@
+fastapi>=0.118.0,<1.0.0
+uvicorn>=0.37.0,<1.0.0
+python-multipart>=0.0.20,<1.0.0
+openai>=2.29.0,<3.0.0
+python-dotenv>=1.2.2,<2.0.0
+llama-index>=0.14.18,<0.15.0
+llama-index-embeddings-openai>=0.6.0,<0.7.0
+llama-index-readers-file>=0.6.0,<0.7.0
+llama-index-vector-stores-chroma>=0.5.5,<0.6.0
+chromadb>=1.5.5,<2.0.0
+pypdf>=6.9.2,<7.0.0
+tiktoken>=0.12.0,<1.0.0
