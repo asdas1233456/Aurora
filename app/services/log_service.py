@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
+from datetime import datetime
 from pathlib import Path
 
 from app.config import AppConfig
@@ -22,6 +23,40 @@ def tail_logs(config: AppConfig, limit: int = 200) -> list[str]:
 
     with log_path.open("r", encoding="utf-8", errors="ignore") as file_obj:
         return list(deque(file_obj, maxlen=max(1, limit)))
+
+
+def filter_logs(
+    config: AppConfig,
+    *,
+    limit: int = 200,
+    level: str = "",
+    keyword: str = "",
+    start_time: str = "",
+    end_time: str = "",
+) -> list[str]:
+    """按条件筛选最近日志。"""
+    lines = tail_logs(config, limit=10_000)
+    normalized_level = level.strip().upper()
+    normalized_keyword = keyword.strip().lower()
+    start_dt = _parse_log_datetime(start_time)
+    end_dt = _parse_log_datetime(end_time)
+
+    filtered: list[str] = []
+    for line in lines:
+        parsed_line = _parse_log_line(line)
+
+        if normalized_level and parsed_line["level"] != normalized_level:
+            continue
+        if normalized_keyword and normalized_keyword not in parsed_line["raw"].lower():
+            continue
+        if start_dt and parsed_line["timestamp"] and parsed_line["timestamp"] < start_dt:
+            continue
+        if end_dt and parsed_line["timestamp"] and parsed_line["timestamp"] > end_dt:
+            continue
+
+        filtered.append(line)
+
+    return filtered[-max(1, limit) :]
 
 
 def clear_logs(config: AppConfig) -> None:
@@ -50,3 +85,32 @@ def get_log_summary(config: AppConfig) -> dict[str, int | str]:
         "line_count": len(lines),
     }
 
+
+def _parse_log_line(line: str) -> dict[str, object]:
+    parts = [part.strip() for part in line.split("|", maxsplit=3)]
+    timestamp = _parse_log_datetime(parts[0]) if parts else None
+    level = parts[1].upper() if len(parts) > 1 else ""
+    return {
+        "timestamp": timestamp,
+        "level": level,
+        "raw": line,
+    }
+
+
+def _parse_log_datetime(value: str) -> datetime | None:
+    normalized_value = value.strip()
+    if not normalized_value:
+        return None
+
+    candidate_values = [
+        normalized_value,
+        normalized_value.replace("T", " "),
+    ]
+    for candidate in candidate_values:
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+            try:
+                return datetime.strptime(candidate, fmt)
+            except ValueError:
+                continue
+
+    return None

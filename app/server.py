@@ -2,36 +2,44 @@
 
 from __future__ import annotations
 
-import logging
 import json
+import logging
 import mimetypes
 import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi import Body, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.api.chat import ask_question
 from app.api.knowledge_base import (
+    cancel_rebuild_job,
+    delete_documents,
     get_chunk_count,
+    get_current_rebuild_job,
     get_document_list,
     get_document_preview,
+    get_rebuild_job,
     knowledge_base_ready,
     rebuild_knowledge_base,
+    rename_document,
+    update_document_metadata,
     upload_raw_documents,
 )
+from app.api.knowledge_graph import get_knowledge_graph
 from app.api.logs import clear_application_logs, get_logs_summary, get_recent_logs
-from app.api.settings import get_masked_settings, update_settings
+from app.api.settings import get_masked_settings, test_settings, update_settings
 from app.api.system import get_overview
 from app.config import get_config
 from app.logging_config import configure_logging
+from app.services.catalog_service import get_document_status_counts
 from app.services.rag_service import stream_answer_with_rag
+from app.services.settings_service import SettingsValidationError
 
 
 config = get_config()
@@ -39,7 +47,6 @@ configure_logging(config)
 logger = logging.getLogger(__name__)
 
 # Windows 某些环境下会把 .js 识别成 text/plain，导致浏览器拒绝加载模块脚本。
-# 这里在应用启动时显式注册常用前端静态资源类型，确保 Vue 构建产物能正确返回。
 mimetypes.add_type("application/javascript", ".js")
 mimetypes.add_type("application/javascript", ".mjs")
 mimetypes.add_type("text/css", ".css")
@@ -78,6 +85,27 @@ class SettingsUpdateModel(BaseModel):
     """配置更新模型。"""
 
     values: dict[str, Any]
+
+
+class DocumentsDeleteModel(BaseModel):
+    """文档删除请求模型。"""
+
+    paths: list[str] = Field(default_factory=list, min_length=1)
+
+
+class DocumentRenameModel(BaseModel):
+    """文档重命名请求模型。"""
+
+    path: str
+    new_name: str = Field(..., min_length=1)
+
+
+class DocumentMetadataUpdateModel(BaseModel):
+    """文档元数据更新请求模型。"""
+
+    paths: list[str] = Field(default_factory=list, min_length=1)
+    theme: str | None = None
+    tags: list[str] | None = None
 
 
 FRONTEND_DIST_DIR = config.base_dir / "frontend" / "dist"
@@ -145,6 +173,42 @@ def get_documents():
     return [asdict(item) for item in get_document_list(get_config())]
 
 
+@app.patch("/api/v1/documents/metadata")
+def patch_document_metadata(payload: DocumentMetadataUpdateModel):
+    """更新文档主题与标签。"""
+    result = update_document_metadata(
+        payload.paths,
+        get_config(),
+        theme=payload.theme,
+        tags=payload.tags,
+    )
+    return [asdict(item) for item in result]
+
+
+@app.delete("/api/v1/documents")
+def delete_document_files(payload: DocumentsDeleteModel = Body(...)):
+    """删除一个或多个文档。"""
+    result = delete_documents(payload.paths, get_config())
+    return {
+        "deleted_count": len(result.deleted_paths),
+        "deleted_paths": result.deleted_paths,
+        "missing_paths": result.missing_paths,
+    }
+
+
+@app.put("/api/v1/documents/rename")
+def rename_document_file(payload: DocumentRenameModel):
+    """重命名文档。"""
+    try:
+        result = rename_document(payload.path, payload.new_name, get_config())
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (FileExistsError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return asdict(result)
+
+
 @app.get("/api/v1/documents/preview")
 def preview_document(path: str = Query(..., description="文档绝对路径")):
     """返回文档预览内容。"""
@@ -173,23 +237,66 @@ async def upload_document_files(files: list[UploadFile] = File(...)):
 def get_kb_status(request: Request):
     """返回知识库状态。"""
     runtime_config = _resolve_runtime_config(request)
+    status_counts = get_document_status_counts(runtime_config)
+    current_job = get_current_rebuild_job()
     return {
         "ready": knowledge_base_ready(runtime_config),
         "chunk_count": get_chunk_count(runtime_config),
         "document_count": len(get_document_list(runtime_config)),
+        "indexed_count": status_counts.get("indexed", 0),
+        "changed_count": status_counts.get("changed", 0),
+        "pending_count": status_counts.get("pending", 0),
+        "failed_count": status_counts.get("failed", 0),
+        "current_job": asdict(current_job) if current_job else None,
+    }
+
+
+@app.get("/api/v1/knowledge-base/jobs/current")
+def get_current_kb_job():
+    """返回当前知识库任务。"""
+    current_job = get_current_rebuild_job()
+    return asdict(current_job) if current_job else None
+
+
+@app.get("/api/v1/knowledge-base/jobs/{job_id}")
+def get_kb_job(job_id: str):
+    """按任务 ID 查询知识库任务。"""
+    job = get_rebuild_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="知识库任务不存在。")
+    return asdict(job)
+
+
+@app.post("/api/v1/knowledge-base/jobs/{job_id}/cancel")
+def cancel_kb_job(job_id: str):
+    """取消知识库任务。"""
+    job = cancel_rebuild_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="知识库任务不存在。")
+    return asdict(job)
+
+
+@app.get("/api/v1/knowledge-graph")
+def get_knowledge_graph_view():
+    """返回知识图谱视图。"""
+    graph = get_knowledge_graph(get_config())
+    return {
+        "nodes": [asdict(node) for node in graph.nodes],
+        "edges": [asdict(edge) for edge in graph.edges],
+        "summary": graph.summary,
     }
 
 
 @app.post("/api/v1/knowledge-base/rebuild")
 def rebuild_kb(request: Request):
-    """重建知识库。"""
+    """启动异步重建知识库。"""
     runtime_config = _resolve_runtime_config(request)
     try:
-        stats = rebuild_knowledge_base(runtime_config)
+        job = rebuild_knowledge_base(runtime_config)
     except Exception as exc:
         logger.exception("REST 重建知识库失败。")
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return asdict(stats)
+    return asdict(job)
 
 
 @app.post("/api/v1/chat/ask")
@@ -210,6 +317,12 @@ def ask_kb_question(payload: ChatRequestModel, request: Request):
     return {
         "answer": result.answer,
         "retrieved_count": result.retrieved_count,
+        "retrieval_ms": result.retrieval_ms,
+        "generation_ms": result.generation_ms,
+        "total_ms": result.total_ms,
+        "rewritten_question": result.rewritten_question,
+        "retrieval_query": result.retrieval_query,
+        "confidence": result.confidence,
         "citations": [asdict(item) for item in result.citations],
     }
 
@@ -220,8 +333,17 @@ def stream_kb_question(payload: ChatRequestModel, request: Request):
     runtime_config = _resolve_runtime_config(request)
 
     def generate():
+        started_at = time.perf_counter()
         try:
-            stream, citations, retrieved_count = stream_answer_with_rag(
+            (
+                stream,
+                citations,
+                retrieved_count,
+                retrieval_ms,
+                rewritten_question,
+                retrieval_query,
+                confidence,
+            ) = stream_answer_with_rag(
                 question=payload.question,
                 chat_history=[item.model_dump() for item in payload.chat_history],
                 config=runtime_config,
@@ -231,21 +353,33 @@ def stream_kb_question(payload: ChatRequestModel, request: Request):
             meta_event = {
                 "type": "meta",
                 "retrieved_count": retrieved_count,
+                "retrieval_ms": retrieval_ms,
+                "rewritten_question": rewritten_question,
+                "retrieval_query": retrieval_query,
+                "confidence": confidence,
             }
             yield json.dumps(meta_event, ensure_ascii=False) + "\n"
 
             full_answer_parts: list[str] = []
+            generation_started_at = time.perf_counter()
             for chunk in stream:
                 if not chunk:
                     continue
                 full_answer_parts.append(chunk)
                 yield json.dumps({"type": "delta", "content": chunk}, ensure_ascii=False) + "\n"
+            generation_ms = (time.perf_counter() - generation_started_at) * 1000
 
             done_event = {
                 "type": "done",
                 "answer": "".join(full_answer_parts),
                 "citations": [asdict(item) for item in citations],
                 "retrieved_count": retrieved_count,
+                "retrieval_ms": retrieval_ms,
+                "generation_ms": generation_ms,
+                "total_ms": (time.perf_counter() - started_at) * 1000,
+                "rewritten_question": rewritten_question,
+                "retrieval_query": retrieval_query,
+                "confidence": confidence,
             }
             yield json.dumps(done_event, ensure_ascii=False) + "\n"
         except Exception as exc:
@@ -256,12 +390,31 @@ def stream_kb_question(payload: ChatRequestModel, request: Request):
 
 
 @app.get("/api/v1/logs")
-def get_logs(limit: int = Query(default=200, ge=1, le=1000)):
+def get_logs(
+    limit: int = Query(default=200, ge=1, le=1000),
+    level: str = Query(default=""),
+    keyword: str = Query(default=""),
+    start_time: str = Query(default=""),
+    end_time: str = Query(default=""),
+):
     """返回最近日志。"""
     runtime_config = get_config()
     return {
         "summary": get_logs_summary(runtime_config),
-        "lines": get_recent_logs(runtime_config, limit=limit),
+        "filters": {
+            "level": level,
+            "keyword": keyword,
+            "start_time": start_time,
+            "end_time": end_time,
+        },
+        "lines": get_recent_logs(
+            runtime_config,
+            limit=limit,
+            level=level,
+            keyword=keyword,
+            start_time=start_time,
+            end_time=end_time,
+        ),
     }
 
 
@@ -281,8 +434,23 @@ def get_settings_view():
 @app.put("/api/v1/settings")
 def update_settings_view(payload: SettingsUpdateModel):
     """更新配置。"""
-    update_settings(get_config(), payload.values)
+    try:
+        update_settings(get_config(), payload.values)
+    except SettingsValidationError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "配置校验失败，请修正后再保存。",
+                "errors": exc.errors,
+            },
+        ) from exc
     return {"message": "配置已写入 .env。"}
+
+
+@app.post("/api/v1/settings/test")
+def test_settings_view(payload: SettingsUpdateModel):
+    """测试配置连通性。"""
+    return test_settings(get_config(), payload.values)
 
 
 @app.get("/api/v1/runtime/config")
@@ -306,15 +474,44 @@ if FRONTEND_DIST_DIR.exists():
     if assets_dir.exists():
         app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
 
+    def _frontend_dev_hint() -> HTMLResponse:
+        return HTMLResponse(
+            """
+            <html>
+              <head>
+                <meta charset="utf-8" />
+                <title>Aurora Backend Ready</title>
+                <style>
+                  body { font-family: "Segoe UI", Arial, sans-serif; margin: 40px; line-height: 1.6; color: #1f2937; }
+                  code { background: #f3f4f6; padding: 2px 6px; border-radius: 6px; }
+                  a { color: #0f766e; }
+                </style>
+              </head>
+              <body>
+                <h1>Aurora backend is running.</h1>
+                <p>The frontend production build is not available right now.</p>
+                <p>Open <a href="http://127.0.0.1:5173/">http://127.0.0.1:5173/</a> to preview the app.</p>
+                <p>Use <code>/api/v1/*</code> for API requests.</p>
+              </body>
+            </html>
+            """
+        )
+
     @app.get("/")
     def serve_frontend_index():
-        """返回构建后的 Vue 首页。"""
-        return FileResponse(FRONTEND_DIST_DIR / "index.html")
+        """返回构建后的 React 首页。"""
+        index_file = FRONTEND_DIST_DIR / "index.html"
+        if not index_file.exists():
+            return _frontend_dev_hint()
+        return FileResponse(index_file)
 
     @app.get("/{full_path:path}")
     def serve_frontend_fallback(full_path: str):
-        """前端路由回退到 Vue 单页应用。"""
+        """前端路由回退到 React 单页应用。"""
         candidate = FRONTEND_DIST_DIR / full_path
         if candidate.exists() and candidate.is_file():
             return FileResponse(candidate)
-        return FileResponse(FRONTEND_DIST_DIR / "index.html")
+        index_file = FRONTEND_DIST_DIR / "index.html"
+        if not index_file.exists():
+            return _frontend_dev_hint()
+        return FileResponse(index_file)

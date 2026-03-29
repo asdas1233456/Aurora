@@ -1,327 +1,374 @@
-# Aurora - 软件测试知识工作台
-[![Python](https://img.shields.io/badge/Python-3.11+-3776AB)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.118+-009688)](https://fastapi.tiangolo.com/)
-[![Vue](https://img.shields.io/badge/Vue-3-42b883)](https://vuejs.org/)
-[![Vite](https://img.shields.io/badge/Vite-7-646cff)](https://vite.dev/)
+# Aurora
+
+[![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.118+-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![React](https://img.shields.io/badge/React-18-149ECA?logo=react&logoColor=white)](https://react.dev/)
+[![Vite](https://img.shields.io/badge/Vite-7-646CFF?logo=vite&logoColor=white)](https://vite.dev/)
 [![Chroma](https://img.shields.io/badge/Chroma-VectorDB-16A34A)](https://www.trychroma.com/)
 
-一个面向软件测试场景的知识库问答系统，支持文档入库、向量检索、流式问答、Dashboard 工作台、运行时测试 Key 和 REST API。  
-[功能特性](#-功能特性) • [快速开始](#-快速开始) • [工作流](#-工作流) • [适用场景](#-适用场景) • [版本迭代](#-版本迭代)
+Aurora 是一个面向软件测试场景的本地知识工作台，把文档管理、知识库重建、RAG 问答、知识图谱、日志检索和配置中心整合到一个控制台里。
 
-当前版本：`v0.4.1`
+它适合测试团队把常见文档、排障经验、ADB 命令、Linux 命令、Web / 移动端测试经验、接口测试和性能测试资料沉淀成一个可检索、可追问、可持续维护的内部知识库。
+
+当前版本：`v0.7.0`
 
 ---
 
-## ✨ 功能特性
+## 📚 目录导航
 
-### 核心功能
+- [✨ 项目简介](#-项目简介)
+- [🚀 核心特性](#-核心特性)
+- [🖼️ 界面预览](#️-界面预览)
+- [🎯 适用场景](#-适用场景)
+- [🧭 推荐工作流](#-推荐工作流)
+- [🧪 本地演示模式](#-本地演示模式)
+- [🤖 当前支持的模型接入方式](#-当前支持的模型接入方式)
+- [🧱 技术栈](#-技术栈)
+- [⚡ 快速开始](#-快速开始)
+- [🔧 配置说明](#-配置说明)
+- [🗂️ 项目结构](#️-项目结构)
+- [🖥️ 当前页面工作区](#️-当前页面工作区)
+- [✅ 测试与构建](#-测试与构建)
+- [📌 当前状态](#-当前状态)
+- [🛣️ 版本路线图](#️-版本路线图)
+- [🔭 后续优化方向](#-后续优化方向)
 
-| 功能模块 | 核心特性 | 状态 |
+---
+
+## ✨ 项目简介
+
+Aurora 不是单纯的聊天界面，也不是单纯的文件管理工具，而是一套围绕“知识资料沉淀 -> 索引构建 -> 问答验证 -> 图谱浏览 -> 日志排查”闭环设计的本地工作台。
+
+你可以把它理解成：
+
+- 测试团队内部知识库控制台
+- RAG 问答效果验证平台
+- 模型联调与知识库调试工作台
+- 知识图谱和日志辅助排查入口
+
+---
+
+## 🚀 核心特性
+
+| 模块 | 能力 | 当前状态 |
 | --- | --- | --- |
-| **文档入库** | 支持 `pdf`、`txt`、`md` 文档读取、上传和解析 | ✅ |
-| **向量知识库** | 基于 LlamaIndex + Chroma 完成切分、向量化和召回 | ✅ |
-| **知识库重建** | 支持一键重建知识库并刷新索引 | ✅ |
-| **多轮问答** | 支持带历史上下文的知识库问答 | ✅ |
-| **流式输出** | 聊天页支持边生成边展示 | ✅ |
-| **引用来源** | 展示命中文档、来源路径和片段引用 | ✅ |
-| **运行时测试 Key** | 前端可临时填写模型 Key 和 API Base 联调 | ✅ |
-| **REST API** | 提供文档、建库、问答、日志、配置接口 | ✅ |
-| **OpenAI 兼容模型** | 支持 OpenAI API 和 OpenAI Compatible API | ✅ |
-| **Agent 路由** | 根据问题类型切换知识库或工具能力 | 🚧 |
-| **网页搜索工具** | 为知识库之外的问题补充外部信息 | 🚧 |
-| **SQL 查询工具** | 为结构化数据查询提供工具调用能力 | 🚧 |
+| 📄 文档管理 | 上传、预览、重命名、删除、主题标签维护、批量操作 | 已完成 |
+| 🧠 知识库构建 | 一键重建、索引状态查看、切片统计、失败文档统计 | 已完成 |
+| 💬 RAG 问答 | 多会话、流式回答、引用来源、耗时展示、本地演示模式问答 | 已完成 |
+| 🕸️ 知识图谱 | 按主题、文件类型、文档生成轻量图谱并浏览 | 已完成 |
+| ⚙️ 设置与联调 | `.env` 保存、多厂商预设、连通性测试、运行时覆盖 | 已完成 |
+| 📜 日志排查 | 日志筛选、日志概况、固定高度滚动查看、清空日志 | 已完成 |
 
-### 工作台能力
+---
 
-| 页面模块 | 功能说明 | 状态 |
+## 🖼️ 界面预览
+
+| 页面 | 建议文件名 | 当前状态 |
 | --- | --- | --- |
-| **Dashboard** | 系统状态、文档统计、最近文档、快速入口 | ✅ |
-| **知识库管理** | 文档列表、预览、上传、重建知识库 | ✅ |
-| **对话页面** | 流式问答、消息气泡、引用来源、多轮会话 | ✅ |
-| **配置页面** | 查看和更新 `.env` 配置 | ✅ |
-| **日志页面** | 查看最近日志、清空日志 | ✅ |
-
-### 内置知识主题
-
-| 主题 | 内容示例 | 状态 |
-| --- | --- | --- |
-| **测试网站** | 接口测试站点、模拟站点、练习站点 | ✅ |
-| **ADB 命令** | 设备连接、安装、抓日志、Activity 排查 | ✅ |
-| **Linux 命令** | 文件、进程、网络、系统排查常用命令 | ✅ |
-| **Python 测试经验** | Pytest、接口测试、自动化脚本建议 | ✅ |
-| **Java 测试经验** | 单测、接口测试、后端排查思路 | ✅ |
-| **手机测试** | Android 测试思路、兼容性与排障 | ✅ |
-| **Web 测试** | 功能、兼容、UI、网络、前端排障 | ✅ |
-| **性能测试** | 压测、瓶颈分析、性能指标理解 | ✅ |
-
----
-
-## 🧱 技术栈
-
-### 后端
-
-- **FastAPI** - REST API 框架
-- **Uvicorn** - ASGI 服务
-- **LlamaIndex** - RAG 编排
-- **Chroma** - 向量数据库
-- **OpenAI SDK** - 模型接口接入
-- **python-dotenv** - 环境变量管理
-- **Pydantic** - 数据校验
-
-### 前端
-
-- **Vue 3** - UI 框架
-- **Vite** - 构建工具
-- **Vue Router** - 路由管理
-- **Chart.js** - 图表展示
-
----
-
-## 🚀 快速开始
-
-### 环境要求
-
-- Python 3.11+
-- Node.js 20+
-- npm 10+
-- 可访问的模型 API
-
-### 安装与启动
-
-#### Windows
-
-```powershell
-cd aurora
-.\start.ps1
-```
-
-#### Linux / macOS
-
-```bash
-cd aurora
-chmod +x start.sh
-./start.sh
-```
-
-### 访问地址
-
-| 服务 | 地址 |
-| --- | --- |
-| 前端页面 | `http://127.0.0.1:8000` |
-| API 文档 | `http://127.0.0.1:8000/docs` |
-| 健康检查 | `http://127.0.0.1:8000/health` |
-
-### 环境变量示例
-
-先复制环境变量模板：
-
-```powershell
-Copy-Item .env.example .env
-```
-
-或：
-
-```bash
-cp .env.example .env
-```
-
-#### 方案一：全部使用 OpenAI
-
-```env
-LLM_PROVIDER=openai
-EMBEDDING_PROVIDER=openai
-
-LLM_API_KEY=your_openai_key
-LLM_MODEL=gpt-4.1-mini
-
-EMBEDDING_API_KEY=your_openai_key
-EMBEDDING_MODEL=text-embedding-3-small
-```
-
-#### 方案二：聊天模型使用兼容 API，Embedding 使用 OpenAI
-
-```env
-LLM_PROVIDER=openai_compatible
-LLM_API_KEY=your_llm_key
-LLM_API_BASE=https://your-compatible-api.example.com/v1
-LLM_MODEL=your-model-name
-
-EMBEDDING_PROVIDER=openai
-EMBEDDING_API_KEY=your_openai_key
-EMBEDDING_MODEL=text-embedding-3-small
-```
-
----
-
-## 🔄 工作流
-
-```text
-准备测试文档
-    -> 放入 data/ 或从前端上传
-    -> 重建知识库
-    -> 文档切分与向量化
-    -> Chroma 存储索引
-    -> 用户发起提问
-    -> 检索相关片段
-    -> 调用模型生成回答
-    -> 返回答案与引用来源
-```
-
-### 推荐使用流程
-
-1. 把测试知识文档放进 `data/` 目录，或通过前端页面上传。
-2. 在知识库页面点击“重建知识库”。
-3. 在配置页或运行时测试 Key 面板中填写模型配置。
-4. 进入对话页提问，查看流式回答和引用来源。
-5. 结合 Dashboard 观察系统状态和文档情况。
+| 总览 / 主控制台 | ![](C:\Users\ddd\Desktop\Aurora\image\README\chat-workbench.png) | ✅ |
+| 知识库 / 控制台视图 | ![](C:\Users\ddd\Desktop\Aurora\image\README\dashboard-overview.png) | ✅ |
+| 对话 / RAG 问答 | <img src="C:\Users\ddd\Desktop\Aurora\image\README\knowledge-base.png" style="zoom:75%;" /> | ✅ |
+| 图谱 / 关系视图 | ![](C:\Users\ddd\Desktop\Aurora\image\README\knowledge-graph.png) | ✅ |
+| 日志 / 设置页面 | ![](C:\Users\ddd\Desktop\Aurora\image\README\logs-settings.png) | ✅ |
 
 ---
 
 ## 🎯 适用场景
 
-- **测试经验沉淀**：把零散文档、命令、FAQ 整理成统一知识库。
-- **团队提效**：减少重复问答，加快新人上手和问题排查。
-- **测试门户集成**：作为 QA Portal、测试平台或内部工具的 AI 问答入口。
-- **演示与 PoC**：适合做知识库问答、RAG、Agent 基础工程演示。
-- **后续扩展基础**：为网页搜索、SQL 工具和 Agent 路由提供基础骨架。
-
----
-
-## 📡 REST API
-
-| 接口 | 方法 | 说明 |
+| 场景 | 适合做什么 | 对应页面 |
 | --- | --- | --- |
-| `/health` | `GET` | 健康检查 |
-| `/api/v1/system/overview` | `GET` | 系统总览 |
-| `/api/v1/documents` | `GET` | 文档列表 |
-| `/api/v1/documents/preview` | `GET` | 文档预览 |
-| `/api/v1/documents/upload` | `POST` | 上传文档 |
-| `/api/v1/knowledge-base/status` | `GET` | 知识库状态 |
-| `/api/v1/knowledge-base/rebuild` | `POST` | 重建知识库 |
-| `/api/v1/chat/ask` | `POST` | 普通问答 |
-| `/api/v1/chat/stream` | `POST` | 流式问答 |
-| `/api/v1/logs` | `GET/DELETE` | 查询或清空日志 |
-| `/api/v1/settings` | `GET/PUT` | 查看或更新配置 |
-| `/api/v1/runtime/config` | `GET` | 查看运行时请求头说明 |
+| 团队知识沉淀 | 把测试规范、排障手册、命令集合和经验文档沉淀到知识库 | 知识库 |
+| RAG 联调 | 验证切片、检索、引用和回答链路是否有效 | 知识库 / 对话 / 日志 |
+| 问答验收 | 用真实测试资料验证回答质量与引用可信度 | 对话 |
+| 图谱辅助理解 | 看知识覆盖范围、主题聚类和资料结构关系 | 图谱 |
+| 日志排查 | 排查建库、问答、模型调用、配置异常 | 日志 |
 
 ---
 
-## 📁 项目结构
+## 🧭 推荐工作流
 
-```text
-aurora/
-├── app/
-│   ├── api/
-│   ├── services/
-│   ├── config.py
-│   ├── llm.py
-│   ├── logging_config.py
-│   ├── schemas.py
-│   └── server.py
-├── frontend/
-│   ├── src/
-│   │   ├── api/
-│   │   ├── components/
-│   │   ├── router/
-│   │   ├── views/
-│   │   ├── App.vue
-│   │   └── main.js
-│   ├── index.html
-│   ├── package.json
-│   └── vite.config.js
-├── data/
-├── db/
-├── logs/
-├── api_server.py
-├── requirements.txt
-├── .env.example
-├── start.ps1
-├── start.sh
-└── README.md
-```
+1. 准备资料
+
+把测试资料放入 `data/` 目录，或者在“知识库”页面直接上传。
+
+2. 配置模型
+
+长期配置放在“设置”页保存到 `.env`；临时联调使用运行时请求头覆盖。
+
+3. 重建知识库
+
+点击“开始重建”，系统会扫描文档、切片并写入向量索引。
+
+4. 进入对话验证
+
+在“对话”页提问，观察回答、引用来源和耗时是否符合预期。
+
+5. 查看图谱与日志
+
+在“图谱”页检查知识结构，在“日志”页排查建库或问答异常。
 
 ---
 
-## 🛠 待优化功能
+## 🧪 本地演示模式
 
-| 优化项 | 说明 | 优先级 |
+当未配置完整的 LLM / Embedding 密钥时，Aurora 会进入“本地演示模式”。
+
+此模式下仍可完成：
+
+- 文档上传、预览、重命名、删除和元数据维护
+- 知识库重建与本地索引更新
+- 本地抽取式问答
+- 知识图谱浏览
+- 设置页配置维护与连通性测试
+- 日志查询与排查
+
+适合用于：
+
+- 本地试用
+- 前后端联调
+- 功能验收
+- 演示流程走查
+
+---
+
+## 🤖 当前支持的模型接入方式
+
+| 类别 | 当前支持 | 说明 |
 | --- | --- | --- |
-| 历史会话管理 | 增加会话列表、会话命名、会话持久化 | 高 |
-| 文档管理 | 增加删除、批量操作、重命名能力 | 高 |
-| 问答体验 | 增加停止生成、重新生成、复制答案 | 中 |
-| 配置校验 | 增强字段校验和错误提示 | 中 |
-| 日志筛选 | 支持按级别、关键词、时间范围筛选 | 中 |
-| 自动化测试 | 增加前后端测试用例 | 高 |
-| 安全能力 | 增加登录、权限控制、敏感配置保护 | 高 |
+| 后端接入模式 | `openai` / OpenAI Compatible | 当前主要通过 OpenAI 及兼容接口工作 |
+| 前端厂商预设 | `openai`、`openai_compatible`、`deepseek`、`qwen`、`zhipu`、`moonshot`、`siliconflow`、`openrouter` | 便于快速填充提供方、模型名和 API Base |
+| 运行时覆盖 | 支持 | 仅对当前请求生效，不写入 `.env` |
+
+补充说明：
+
+- 除 `openai` 外，大部分厂商当前都通过 OpenAI Compatible 方式接入
+- 预设是为了提升联调效率，不代表所有厂商都已做独立后端适配
 
 ---
 
-## 🗺 后续规划
+## 🧱 技术栈
 
-### 短期规划
-
-- 增加聊天历史会话列表
-- 增加文档删除和批量管理
-- 增加问答耗时和检索耗时展示
-- 增加更完整的空状态和错误状态页
-
-### 中期规划
-
-- 接入 Ollama 或本地模型
-- 增加网页搜索工具
-- 增加 SQL 查询工具
-- 增加 Agent Router
-- 增加 Prompt 配置能力
-
-### 长期规划
-
-- 多知识库空间
-- 多用户协作
-- 审计日志
-- 工作流编排
-- 从知识库系统演进为测试智能体平台
-
----
-
-## 📈 版本迭代
-
-| 版本 | 迭代内容 |
+| 层级 | 技术 |
 | --- | --- |
-| `v0.1.0` | 基于 Streamlit 的 MVP，完成基础知识库问答 |
-| `v0.2.0` | 后端模块化拆分，加入知识库、日志、配置能力雏形 |
-| `v0.3.0` | 增加 Dashboard 思路和 REST API 层，为前后端分离做准备 |
-| `v0.4.0` | 前端重构为 Vue 3 + Vite，FastAPI 托管前端，支持流式聊天 |
-| `v0.4.1` | 统一命名为 Aurora，清理冗余脚本和历史文档，项目结构进一步收口 |
+| 后端 | FastAPI、Uvicorn、LlamaIndex、Chroma、OpenAI SDK、python-dotenv |
+| 前端 | React 18、Vite 7、Vitest、原生 CSS |
+| 运行环境 | Python 3.11+、Node.js 20+、npm 10+ |
 
 ---
 
-## ❓ FAQ
+## ⚡ 快速开始
 
-### 当前默认前端是什么？
+### 环境要求
 
-当前默认前端是 Vue，Streamlit 已从主项目中移除。
+| 项目 | 要求 |
+| --- | --- |
+| Python | 3.11+ |
+| Node.js | 20+ |
+| npm | 10+ |
 
-### 页面能打开但问答失败，通常是什么原因？
+### 一键启动
 
-通常是以下几类问题：
+| 系统 | 命令 |
+| --- | --- |
+| Windows | `.\start.ps1` |
+| Linux / macOS | `chmod +x start.sh && ./start.sh` |
 
-- 没有配置有效的模型 Key
-- 没有配置可用的 Embedding 接口
-- 还没有重建知识库
-- API Base 配置错误
+启动脚本会自动完成：
 
-### 前端填写的测试 Key 会写入 `.env` 吗？
+- 创建 `.venv`
+- 创建 `.env`
+- 安装后端依赖
+- 安装前端依赖
+- 构建前端
+- 启动 FastAPI 服务
 
-默认不会。测试 Key 只作用于当前浏览器会话和当前请求。
+默认访问地址：
 
-### 推荐的启动方式是什么？
+| 地址 | 说明 |
+| --- | --- |
+| `http://127.0.0.1:8000` | 应用首页 |
+| `http://127.0.0.1:8000/health` | 健康检查 |
 
-推荐直接使用：
+### 手动安装
 
 ```powershell
-.\start.ps1
+python -m venv .venv
+.\.venv\Scripts\activate
+pip install -r requirements.txt
+
+cd frontend
+npm install
+cd ..
 ```
 
-### 这个项目现在已经是 Agent 了吗？
+### 手动启动后端
 
-当前更准确地说是“知识库问答系统 + AI 工作台”，但已经为网页搜索、SQL 工具和 Agent 路由预留了扩展空间。
+```powershell
+.\.venv\Scripts\python.exe api_server.py
+```
+
+### 手动启动前端开发模式
+
+```powershell
+cd frontend
+npm run dev
+```
+
+---
+
+## 🔧 配置说明
+
+项目首次启动时会自动创建 `.env`。
+
+常见配置包括：
+
+| 配置项 | 说明 |
+| --- | --- |
+| `LLM_PROVIDER` | 聊天模型提供方 |
+| `EMBEDDING_PROVIDER` | 向量模型提供方 |
+| `LLM_MODEL` | 聊天模型名称 |
+| `EMBEDDING_MODEL` | 向量模型名称 |
+| `LLM_API_BASE` | 聊天模型接口地址 |
+| `EMBEDDING_API_BASE` | 向量模型接口地址 |
+| `LLM_API_KEY` | 聊天模型密钥 |
+| `EMBEDDING_API_KEY` | 向量模型密钥 |
+| `CHUNK_SIZE` | 切片大小 |
+| `CHUNK_OVERLAP` | 切片重叠长度 |
+| `TOP_K` | 检索召回数量 |
+| `MAX_HISTORY_TURNS` | 最大上下文轮数 |
+| `LOG_LEVEL` | 日志级别 |
+| `API_HOST` / `API_PORT` | 服务监听地址和端口 |
+
+推荐做法：
+
+- 长期固定配置放 `.env`
+- 临时切换 Key / Base 用前端运行时请求头覆盖
+
+---
+
+## 🗂️ 项目结构
+
+```text
+Aurora/
+├─ app/
+│  ├─ api/
+│  ├─ services/
+│  ├─ config.py
+│  ├─ llm.py
+│  ├─ logging_config.py
+│  ├─ schemas.py
+│  └─ server.py
+├─ data/
+├─ db/
+├─ logs/
+├─ frontend/
+│  ├─ src/
+│  │  ├─ App.jsx
+│  │  ├─ api.js
+│  │  ├─ styles.css
+│  │  └─ lib/
+│  └─ package.json
+├─ tests/
+├─ api_server.py
+├─ start.ps1
+├─ start.sh
+├─ requirements.txt
+└─ README.md
+```
+
+---
+
+## 🖥️ 当前页面工作区
+
+| 页面 | 用途 |
+| --- | --- |
+| 总览 | 查看系统状态、资料规模和近期资产 |
+| 知识库 | 管理文档、维护元数据、执行重建 |
+| 对话 | 进行多会话问答与引用验证 |
+| 图谱 | 查看知识结构与关键节点 |
+| 设置 | 维护模型与运行参数 |
+| 日志 | 筛选、查看和清空日志 |
+
+---
+
+## ✅ 测试与构建
+
+### 后端测试
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
+### 前端测试
+
+```powershell
+cd frontend
+npm test -- --run
+```
+
+### 前端构建
+
+```powershell
+cd frontend
+npm run build
+```
+
+---
+
+## 📌 当前状态
+
+当前仓库已经完成 P0 收尾，核心状态如下：
+
+| 能力 | 状态 |
+| --- | --- |
+| 可启动 | 已完成 |
+| 可建库 | 已完成 |
+| 可问答 | 已完成 |
+| 可浏览图谱 | 已完成 |
+| 可维护设置 | 已完成 |
+| 可查看日志 | 已完成 |
+
+详细验收可见：
+
+- [P0_ACCEPTANCE_REPORT.md](./P0_ACCEPTANCE_REPORT.md)
+
+后续待办可见：
+
+- [UNFINISHED_BACKLOG.md](./UNFINISHED_BACKLOG.md)
+
+安全待处理项可见：
+
+- [SECURITY_PENDING.md](./SECURITY_PENDING.md)
+
+项目上下文总结可见：
+
+- [PROJECT_CONTEXT_SUMMARY_2026-03-29.md](./PROJECT_CONTEXT_SUMMARY_2026-03-29.md)
+
+---
+
+## 🛣️ 版本路线图
+
+| 阶段 | 状态 | 说明 |
+| --- | --- | --- |
+| P0 | 已完成 | 可启动、可建库、可问答、可看图谱、可配设置、可查日志 |
+| P1 | 进行中 | 前端拆分、集成测试补齐、任务体系增强、体验继续精修 |
+| P2 | 待推进 | 本地演示模式产品化、多模型扩展、图谱与日志产品化升级 |
+
+---
+
+## 🔭 后续优化方向
+
+| 方向 | 说明 |
+| --- | --- |
+| 前端结构拆分 | 继续拆分 `App.jsx`，降低维护成本 |
+| 集成测试补齐 | 增加 API 级和页面级回归验证 |
+| 任务体系增强 | 完善知识库重建任务持久化与恢复 |
+| 体验优化 | 继续压缩信息密度，优化首屏和日志页 |
+| 演示模式产品化 | 明确本地演示模式与正式模式边界 |
+| 模型扩展 | 继续扩展更多 provider 接入方式 |
+
+---
+
+## License
+
+当前仓库未单独声明 License；如需开源发布，建议补充明确许可证文件。

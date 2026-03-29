@@ -50,7 +50,7 @@ if (-not (Test-Path (Join-Path $frontendRoot "node_modules"))) {
     Set-Location $projectRoot
 }
 
-Write-Host "Building Vue frontend..." -ForegroundColor Yellow
+Write-Host "Building React frontend..." -ForegroundColor Yellow
 Set-Location $frontendRoot
 npm run build | Out-Host
 Set-Location $projectRoot

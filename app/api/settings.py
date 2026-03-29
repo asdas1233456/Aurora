@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict
 
 from app.config import AppConfig
+from app.services.connectivity_service import test_settings_connections
 from app.services.settings_service import load_app_settings, mask_secret, save_app_settings
 
 
@@ -25,3 +26,7 @@ def update_settings(config: AppConfig, values: dict[str, object]) -> None:
     """更新配置。"""
     save_app_settings(config, values)
 
+
+def test_settings(config: AppConfig, values: dict[str, object]) -> dict[str, object]:
+    """测试当前配置是否可连通。"""
+    return asdict(test_settings_connections(config, values))
