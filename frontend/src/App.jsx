@@ -1854,25 +1854,30 @@ export default function App() {
     }
   }
 
-  async function handleDeleteDocuments() {
-    const paths = selectedDocumentIds.length
-      ? selectedDocumentIds
-      : selectedDocumentId
-        ? [selectedDocumentId]
-        : [];
-
-    if (!paths.length) {
-      setKnowledgeMessage("请先选择要删除的文档。");
+  async function handleDeleteDocumentIds(documentIds, successMessage) {
+    if (!documentIds.length) {
       return;
     }
 
-    if (!window.confirm(`确认删除 ${paths.length} 份文档吗？`)) {
+    if (!window.confirm(`确认删除 ${documentIds.length} 份文档吗？`)) {
       return;
     }
 
     try {
-      await removeDocuments(paths);
-      setKnowledgeMessage(`已删除 ${paths.length} 份文档。`);
+      const result = await removeDocuments(documentIds);
+      const deletedCount = Number(result?.deleted_count || 0);
+      const missingCount = Array.isArray(result?.missing_ids) ? result.missing_ids.length : 0;
+
+      if (deletedCount > 0 && missingCount > 0) {
+        setKnowledgeMessage(`${successMessage}${deletedCount} 份文档，另有 ${missingCount} 份未删除，可能已经不存在。`);
+      } else if (deletedCount > 0) {
+        setKnowledgeMessage(`${successMessage}${deletedCount} 份文档。`);
+      } else if (missingCount > 0) {
+        setKnowledgeMessage(`没有实际删除文档；所选 ${missingCount} 份文档可能已经不存在，列表已刷新。`);
+      } else {
+        setKnowledgeMessage("没有实际删除文档，请刷新列表后重试。");
+      }
+
       setSelectedDocumentIds([]);
       await refreshWorkspaceBootstrap({
         keepSelection: false,
@@ -1883,6 +1888,24 @@ export default function App() {
     } catch (error) {
       setKnowledgeMessage(getErrorMessage(error));
     }
+  }
+
+  async function handleDeleteSelectedDocuments() {
+    if (!selectedDocumentIds.length) {
+      setKnowledgeMessage("请先勾选要删除的文档。");
+      return;
+    }
+
+    await handleDeleteDocumentIds(selectedDocumentIds, "已删除所选 ");
+  }
+
+  async function handleDeleteCurrentDocument() {
+    if (!selectedDocumentId) {
+      setKnowledgeMessage("请先选择当前文档。");
+      return;
+    }
+
+    await handleDeleteDocumentIds([selectedDocumentId], "已删除当前 ");
   }
 
   async function handleUploadDocuments() {
@@ -2193,6 +2216,9 @@ export default function App() {
     }
 
     const sessionId = activeSession.id;
+    const nextSessionTitle = activeSession.messages.length
+      ? activeSession.title
+      : makeSessionTitle(question);
     const userMessage = createMessage("user", question);
     const assistantMessage = createMessage("assistant", "", { streaming: true });
     const history = activeSession.messages.map((message) => ({
@@ -2206,7 +2232,7 @@ export default function App() {
 
     updateSession(sessionId, (session) => ({
       ...session,
-      title: session.messages.length ? session.title : makeSessionTitle(question),
+      title: nextSessionTitle,
       messages: [...session.messages, userMessage, assistantMessage],
     }));
 
@@ -2219,6 +2245,8 @@ export default function App() {
           question,
           top_k: Number(chatTopK) || 4,
           chat_history: history,
+          session_id: sessionId,
+          session_title: nextSessionTitle,
         },
         runtimeConfig,
         {
@@ -2969,6 +2997,7 @@ export default function App() {
                     ref={uploadInputRef}
                     className="upload-picker__input"
                     type="file"
+                    accept=".pdf,.txt,.md,.csv,.json,.yaml,.yml,.sql"
                     multiple
                     onChange={(event) => setUploadFiles(Array.from(event.target.files || []))}
                   />
@@ -2990,6 +3019,7 @@ export default function App() {
                     ) : null}
                   </div>
                   <p className="field__hint">支持一次选择多个文件，文件名会在下方清单中显示。</p>
+                  <p className="field__hint">支持一次选择多个文件，当前支持 PDF、TXT、MD、CSV、JSON、YAML 和 SQL。</p>
                   <div className={`upload-file-list ${uploadFiles.length ? "" : "is-empty"}`.trim()}>
                     {uploadFiles.length ? (
                       uploadFiles.map((file) => (
@@ -3005,16 +3035,33 @@ export default function App() {
               </div>
 
               <div className="document-actions">
-                <button className="button" type="button" disabled={!uploadFiles.length} onClick={handleUploadDocuments}>
-                  上传文件 {uploadFiles.length ? `(${uploadFiles.length})` : ""}
+                <button
+                  className="button"
+                  type="button"
+                  data-testid="upload-documents-button"
+                  title={uploadFiles.length ? "上传已选择的文件" : "请先点击“选择文件”"}
+                  disabled={!uploadFiles.length}
+                  onClick={handleUploadDocuments}
+                >
+                  {uploadFiles.length ? `上传文件 (${uploadFiles.length})` : "上传文件（先选择文件）"}
                 </button>
-                <button className="ghost-button" type="button" onClick={handleDeleteDocuments}>
-                  删除所选
+                <button
+                  className="ghost-button"
+                  type="button"
+                  data-testid="delete-selected-documents-button"
+                  title={selectedDocumentIds.length ? "删除当前勾选的文档" : "请先勾选要删除的文档"}
+                  disabled={!selectedDocumentIds.length}
+                  onClick={handleDeleteSelectedDocuments}
+                >
+                  {selectedDocumentIds.length ? `删除所选 (${selectedDocumentIds.length})` : "删除所选（先勾选）"}
                 </button>
                 <button className="ghost-button" type="button" disabled={metadataSaving} onClick={() => handleSaveDocumentMetadata(selectedDocumentIds)}>
                   批量保存主题/标签
                 </button>
               </div>
+              <p className="field-hint">
+                先点“选择文件”再上传；批量删除需要先勾选左侧复选框，右侧按钮用于删除当前预览文档。
+              </p>
 
               {filteredDocuments.length ? (
                 <div className="table-wrap">
@@ -3131,6 +3178,15 @@ export default function App() {
               <div className="toolbar">
                 <button className="button" type="button" disabled={!selectedDocument || metadataSaving} onClick={() => handleSaveDocumentMetadata()}>
                   {metadataSaving ? "保存中..." : "保存当前文档元数据"}
+                </button>
+                <button
+                  className="danger-button"
+                  type="button"
+                  data-testid="delete-current-document-button"
+                  disabled={!selectedDocument}
+                  onClick={handleDeleteCurrentDocument}
+                >
+                  删除当前文档
                 </button>
                 {selectedDocumentIds.length > 1 ? (
                   <button className="ghost-button" type="button" disabled={metadataSaving} onClick={() => handleSaveDocumentMetadata(selectedDocumentIds)}>

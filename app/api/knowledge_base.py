@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from app.config import AppConfig
@@ -25,6 +26,8 @@ from app.services.document_service import (
 )
 from app.services.knowledge_base_job_service import cancel_job, get_current_job, get_job, start_rebuild_job
 from app.services.knowledge_base_service import delete_document_chunks, get_collection_count, index_exists
+
+logger = logging.getLogger(__name__)
 
 
 def upload_documents(uploaded_files: list[object], config: AppConfig) -> list[str]:
@@ -62,6 +65,20 @@ def delete_documents(document_ids: list[str], config: AppConfig) -> DocumentDele
     for deleted_path in source_result.deleted_paths:
         delete_document_chunks(config, deleted_path)
     remove_documents_from_catalog(config, deleted_ids)
+    if not deleted_ids:
+        logger.warning(
+            "Document delete completed without removing files. requested_ids=%s missing_ids=%s missing_paths=%s",
+            document_ids,
+            missing_ids,
+            source_result.missing_paths,
+        )
+    elif missing_ids or source_result.missing_paths:
+        logger.warning(
+            "Document delete partially completed. deleted_ids=%s missing_ids=%s missing_paths=%s",
+            deleted_ids,
+            missing_ids,
+            source_result.missing_paths,
+        )
     return DocumentDeleteResult(
         deleted_ids=deleted_ids,
         deleted_paths=source_result.deleted_paths,

@@ -1,0 +1,4 @@
+case_id,module,priority,precondition,steps,expected_result,test_type,owner
+API-LOGIN-001,登录,P0,测试账号存在,"1. 调用登录接口 2. 输入正确用户名密码 3. 提交请求",返回 200 且 token 非空,positive,qa-team
+API-LOGIN-002,登录,P0,测试账号存在,"1. 调用登录接口 2. 输入错误密码 3. 提交请求",返回 401 且错误码明确,negative,qa-team
+API-ORDER-003,订单查询,P1,订单已创建,"1. 调用订单详情接口 2. 传入有效订单 ID",返回订单详情且字段完整,contract,backend-qa

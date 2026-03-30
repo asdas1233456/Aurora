@@ -14,8 +14,18 @@ ENV_PATH = BASE_DIR / ".env"
 
 load_dotenv(dotenv_path=ENV_PATH, override=False)
 
-SUPPORTED_EXTENSIONS = {".pdf", ".txt", ".md"}
+SUPPORTED_EXTENSIONS = {
+    ".pdf",
+    ".txt",
+    ".md",
+    ".csv",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".sql",
+}
 OPENAI_PROVIDER = "openai"
+LOCAL_MOCK_PROVIDER = "local_mock"
 OPENAI_COMPATIBLE_PROVIDERS = {
     "openai_compatible",
     "deepseek",
@@ -25,8 +35,11 @@ OPENAI_COMPATIBLE_PROVIDERS = {
     "siliconflow",
     "openrouter",
 }
-SUPPORTED_MODEL_PROVIDERS = {OPENAI_PROVIDER, *OPENAI_COMPATIBLE_PROVIDERS}
+SUPPORTED_MODEL_PROVIDERS = {OPENAI_PROVIDER, LOCAL_MOCK_PROVIDER, *OPENAI_COMPATIBLE_PROVIDERS}
 PROVIDER_ALIASES = {
+    "mock": LOCAL_MOCK_PROVIDER,
+    "local": LOCAL_MOCK_PROVIDER,
+    "localmock": LOCAL_MOCK_PROVIDER,
     "compatible": "openai_compatible",
     "custom_api": "openai_compatible",
     "openai_compatible_api": "openai_compatible",
@@ -52,6 +65,11 @@ def _get_env(*names: str, default: str = "") -> str:
     return default
 
 
+def _get_env_bool(*names: str, default: bool = False) -> bool:
+    raw_value = _get_env(*names, default="true" if default else "false")
+    return raw_value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _normalize_provider(value: str, default: str = "openai") -> str:
     """统一 provider 命名，减少配置时的歧义。"""
     normalized = value.strip().lower().replace("-", "_")
@@ -62,6 +80,10 @@ def _normalize_provider(value: str, default: str = "openai") -> str:
 
 def is_openai_provider(value: str) -> bool:
     return _normalize_provider(value) == OPENAI_PROVIDER
+
+
+def is_local_mock_provider(value: str) -> bool:
+    return _normalize_provider(value) == LOCAL_MOCK_PROVIDER
 
 
 def is_openai_compatible_provider(value: str) -> bool:
@@ -127,18 +149,32 @@ class AppConfig:
     no_answer_min_score: float = field(
         default_factory=lambda: float(_get_env("NO_ANSWER_MIN_SCORE", default="0.22"))
     )
+    memory_llm_review_enabled: bool = field(
+        default_factory=lambda: _get_env_bool("MEMORY_LLM_REVIEW_ENABLED", default=True)
+    )
+    memory_llm_review_min_confidence: float = field(
+        default_factory=lambda: float(_get_env("MEMORY_LLM_REVIEW_MIN_CONFIDENCE", default="0.84"))
+    )
+    memory_llm_review_max_candidates: int = field(
+        default_factory=lambda: int(_get_env("MEMORY_LLM_REVIEW_MAX_CANDIDATES", default="2"))
+    )
+    memory_auto_write_max_candidates: int = field(
+        default_factory=lambda: int(_get_env("MEMORY_AUTO_WRITE_MAX_CANDIDATES", default="4"))
+    )
     log_level: str = field(default_factory=lambda: _get_env("LOG_LEVEL", default="INFO").upper())
     api_host: str = field(default_factory=lambda: _get_env("API_HOST", default="127.0.0.1"))
     api_port: int = field(default_factory=lambda: int(_get_env("API_PORT", default="8000")))
     cors_origins: str = field(default_factory=lambda: _get_env("CORS_ORIGINS", default="*"))
     app_name: str = "Aurora"
     app_title: str = "Aurora - 软件测试知识工作台"
-    app_version: str = "v0.7.0"
+    app_version: str = "v0.8.0"
 
     @property
     def llm_api_ready(self) -> bool:
         if not self.llm_model:
             return False
+        if is_local_mock_provider(self.llm_provider):
+            return True
         if is_openai_provider(self.llm_provider):
             return bool(self.llm_api_key)
         if is_openai_compatible_provider(self.llm_provider):

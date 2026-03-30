@@ -1,0 +1,35 @@
+{
+  "title": "登录接口在密码错误时返回 500",
+  "summary": "当密码错误时，服务端没有按约定返回 401，而是抛出未处理异常。",
+  "severity": "high",
+  "priority": "P1",
+  "environment": {
+    "app_version": "v0.8.0",
+    "service": "auth-service",
+    "build": "release-2026.03.30",
+    "browser": "Edge 135"
+  },
+  "precondition": [
+    "存在可用测试账号",
+    "接口网关与鉴权服务已启动"
+  ],
+  "steps": [
+    "调用 POST /api/login",
+    "输入正确用户名和错误密码",
+    "观察响应状态码与错误消息"
+  ],
+  "expected_result": [
+    "返回 401",
+    "错误码为 AUTH_INVALID_CREDENTIALS",
+    "日志中无未处理异常堆栈"
+  ],
+  "actual_result": [
+    "返回 500",
+    "日志出现 NullReferenceException"
+  ],
+  "attachments": [
+    "request-response.txt",
+    "gateway-error.log"
+  ],
+  "root_cause_hypothesis": "密码校验失败分支未做空值保护，异常被全局错误处理中间件兜底成 500。"
+}

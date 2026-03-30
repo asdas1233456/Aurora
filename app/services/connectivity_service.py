@@ -1,15 +1,21 @@
-"""模型配置连通性测试服务。"""
+"""Provider-aware connectivity checks built on Aurora business contracts."""
 
 from __future__ import annotations
 
-from dataclasses import asdict
 from datetime import datetime
 import time
 
-from openai import OpenAI
-
+from app.providers.factory import ProviderFactory
+from app.schemas import (
+    BusinessRequest,
+    ConversationTurn,
+    GenerationConfig,
+    OutputContract,
+    SettingsConnectionReport,
+    ConnectionCheckResult,
+)
 from app.config import AppConfig
-from app.schemas import ConnectionCheckResult, SettingsConnectionReport
+from app.services.capability_guard import CapabilityGuard
 from app.services.knowledge_base_service import build_embedding_model
 from app.services.settings_service import build_config_from_settings_values, validate_app_settings
 
@@ -18,7 +24,6 @@ def test_settings_connections(
     config: AppConfig,
     values: dict[str, object],
 ) -> SettingsConnectionReport:
-    """测试页面配置的 LLM 与 Embedding 连通性。"""
     runtime_config = build_config_from_settings_values(config, values)
     merged_values = {
         "LLM_PROVIDER": runtime_config.llm_provider,
@@ -45,8 +50,11 @@ def test_settings_connections(
     }
     validation_errors = validate_app_settings(merged_values)
     if validation_errors:
-        error_message = "配置校验失败，请先修正字段错误。"
-        failed_result = ConnectionCheckResult(ok=False, latency_ms=0.0, message=error_message)
+        failed_result = ConnectionCheckResult(
+            ok=False,
+            latency_ms=0.0,
+            message="配置校验失败，请先修正错误字段。",
+        )
         return SettingsConnectionReport(
             llm=failed_result,
             embedding=failed_result,
@@ -63,25 +71,34 @@ def test_settings_connections(
 def _test_llm(config: AppConfig) -> ConnectionCheckResult:
     started_at = time.perf_counter()
     try:
-        client_kwargs = {
-            "api_key": config.llm_api_key_for_client,
-            "timeout": config.llm_timeout,
-        }
-        if config.llm_api_base:
-            client_kwargs["base_url"] = config.llm_api_base
-
-        client = OpenAI(**client_kwargs)
-        client.chat.completions.create(
-            model=config.llm_model,
-            messages=[
-                {"role": "system", "content": "You are a connection test."},
-                {"role": "user", "content": "Reply with pong."},
-            ],
-            temperature=0,
-            max_tokens=1,
+        adapter = ProviderFactory(config).create()
+        request = BusinessRequest(
+            scene="qa_query",
+            user_query="Reply with pong.",
+            system_instruction="You are a connection test.",
+            conversation_context=[ConversationTurn(role="user", content="Reply with pong.")],
+            memory_context=[],
+            knowledge_context=[],
+            output_contract=OutputContract(
+                must_include_answer=True,
+                must_include_citations=False,
+                preferred_style="concise",
+                fallback_behavior="best_effort",
+                required_sections=["answer"],
+                scene_specific_rules=["Return a short connection test response."],
+            ),
+            safety_rules=["Return a short answer.", "Do not fabricate citations."],
+            generation_config=GenerationConfig(
+                temperature=0.0,
+                max_tokens=min(config.llm_max_tokens, 32),
+                timeout_seconds=config.llm_timeout,
+            ),
         )
+        response = CapabilityGuard().generate(adapter, request)
         latency_ms = (time.perf_counter() - started_at) * 1000
-        return ConnectionCheckResult(ok=True, latency_ms=latency_ms, message="LLM 连通性测试成功。")
+        if response.answer:
+            return ConnectionCheckResult(ok=True, latency_ms=latency_ms, message="LLM 连通性测试成功。")
+        return ConnectionCheckResult(ok=False, latency_ms=latency_ms, message="LLM 连通性测试失败：返回空响应。")
     except Exception as exc:
         latency_ms = (time.perf_counter() - started_at) * 1000
         return ConnectionCheckResult(ok=False, latency_ms=latency_ms, message=f"LLM 连通性测试失败：{exc}")

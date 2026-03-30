@@ -1,0 +1,28 @@
+pipeline:
+  name: release-quality-gate
+  trigger:
+    branches:
+      - main
+      - release/*
+
+quality_gate:
+  unit_test_pass_rate: 100
+  api_smoke_required: true
+  e2e_smoke_required: true
+  max_blocker_bugs: 0
+  max_critical_bugs: 0
+  code_coverage:
+    line: 80
+    branch: 70
+  performance_budget:
+    p95_response_ms: 800
+    error_rate_percent: 1
+  security_checks:
+    dependency_scan: required
+    secret_scan: required
+    sast_scan: optional
+
+release_policy:
+  allow_manual_override: false
+  require_rollback_plan: true
+  require_release_notes: true

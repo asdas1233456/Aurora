@@ -1,0 +1,37 @@
+{
+  "test_data_factory": {
+    "goal": "为 API、UI、回归和性能测试快速构造稳定、可重复的数据。",
+    "principles": [
+      "默认可回收",
+      "环境隔离",
+      "命名可追踪",
+      "避免依赖生产数据"
+    ],
+    "examples": [
+      {
+        "scenario": "注册用户",
+        "factory_input": {
+          "role": "normal_user",
+          "region": "CN",
+          "marketing_opt_in": false
+        },
+        "expected_output": {
+          "username_pattern": "autotest_user_*",
+          "status": "active"
+        }
+      },
+      {
+        "scenario": "支付失败订单",
+        "factory_input": {
+          "order_status": "payment_failed",
+          "currency": "CNY",
+          "amount": 199.0
+        },
+        "expected_output": {
+          "retryable": true,
+          "refund_status": "not_required"
+        }
+      }
+    ]
+  }
+}

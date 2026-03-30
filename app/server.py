@@ -13,9 +13,12 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.routes.chat import router as chat_router
 from app.api.routes.documents import router as documents_router
+from app.api.routes.internal_chat import router as internal_chat_router
 from app.api.routes.knowledge_base import router as knowledge_base_router
 from app.api.routes.knowledge_graph import router as knowledge_graph_router
 from app.api.routes.logs import router as logs_router
+from app.api.routes.memory import router as memory_router
+from app.api.routes.providers import router as providers_router
 from app.api.routes.settings import router as settings_router
 from app.api.routes.settings import runtime_router
 from app.api.routes.system import router as system_router
@@ -53,6 +56,9 @@ app.include_router(documents_router)
 app.include_router(knowledge_base_router)
 app.include_router(knowledge_graph_router)
 app.include_router(chat_router)
+app.include_router(internal_chat_router)
+app.include_router(memory_router)
+app.include_router(providers_router)
 app.include_router(logs_router)
 app.include_router(settings_router)
 app.include_router(runtime_router)
