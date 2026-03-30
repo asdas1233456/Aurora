@@ -24,6 +24,10 @@ from app.services.local_index_service import (
 logger = logging.getLogger(__name__)
 
 
+def _vector_store_exists(config: AppConfig) -> bool:
+    return (config.db_dir / "chroma.sqlite3").exists()
+
+
 def build_embedding_model(config: AppConfig) -> OpenAIEmbedding:
     """Build the embedding client for vector indexing."""
     if not (
@@ -64,7 +68,7 @@ def get_chroma_collection(config: AppConfig, reset: bool = False):
 
 def get_vector_collection_count(config: AppConfig) -> int:
     """Return vector chunk count when the embedding index exists."""
-    if not config.embedding_api_ready:
+    if not config.embedding_api_ready or not _vector_store_exists(config):
         return 0
     try:
         collection = get_chroma_collection(config, reset=False)
@@ -102,13 +106,24 @@ def create_nodes_from_documents(config: AppConfig, documents: list[Document]) ->
 
 def delete_document_chunks(config: AppConfig, source_path: str) -> None:
     """Delete one document from every retrieval backend."""
-    try:
-        collection = get_chroma_collection(config, reset=False)
-        collection.delete(where={"source_path": source_path})
-    except Exception:
-        pass
+    if config.embedding_api_ready and _vector_store_exists(config):
+        try:
+            collection = get_chroma_collection(config, reset=False)
+            collection.delete(where={"source_path": source_path})
+        except Exception:
+            pass
 
     delete_local_document_chunks(config, source_path)
+
+
+def clear_retrieval_backends(config: AppConfig) -> None:
+    """Clear every retrieval backend without rebuilding immediately."""
+    if _vector_store_exists(config):
+        try:
+            get_chroma_collection(config, reset=True)
+        except Exception:
+            pass
+    clear_local_index(config)
 
 
 def add_nodes_with_embeddings(
@@ -161,8 +176,7 @@ def rebuild_index(config: AppConfig) -> dict[str, int]:
     documents = load_documents(config.data_dir)
     nodes = create_nodes_from_documents(config, documents)
 
-    get_chroma_collection(config, reset=True)
-    clear_local_index(config)
+    clear_retrieval_backends(config)
     add_nodes_with_embeddings(config, nodes)
 
     result = {

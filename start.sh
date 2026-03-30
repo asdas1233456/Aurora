@@ -54,7 +54,7 @@ if [ ! -d "$FRONTEND_ROOT/node_modules" ]; then
   cd "$PROJECT_ROOT"
 fi
 
-echo "Building Vue frontend..."
+echo "Building React frontend..."
 cd "$FRONTEND_ROOT"
 npm run build
 cd "$PROJECT_ROOT"
@@ -65,4 +65,4 @@ echo "Open: http://127.0.0.1:${PORT}"
 echo
 
 export API_PORT="${PORT}"
-.venv/bin/python api_server.py
+.venv/bin/python -m uvicorn app.server:app --host 127.0.0.1 --port "${PORT}"

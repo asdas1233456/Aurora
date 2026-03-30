@@ -112,6 +112,7 @@ def load_documents_from_paths(
         )
 
         extra_metadata = metadata_by_path.get(absolute_path, {})
+        metadata["document_id"] = str(extra_metadata.get("document_id", metadata.get("document_id", "")))
         metadata["source_file"] = source_file
         metadata["source_path"] = absolute_path
         metadata["relative_path"] = relative_path
@@ -131,6 +132,7 @@ def get_document_summaries(data_dir: Path) -> list[DocumentSummary]:
         stat_result = file_path.stat()
         summaries.append(
             DocumentSummary(
+                document_id="",
                 name=file_path.name,
                 path=str(file_path.resolve(strict=False)),
                 relative_path=file_path.resolve(strict=False).relative_to(resolved_data_dir).as_posix(),
@@ -162,7 +164,9 @@ def delete_documents(file_paths: Iterable[str | Path], data_dir: Path) -> Docume
         logger.info("删除文档成功: %s", resolved_path)
 
     return DocumentDeleteResult(
+        deleted_ids=[],
         deleted_paths=deleted_paths,
+        missing_ids=[],
         missing_paths=missing_paths,
     )
 
@@ -188,8 +192,11 @@ def rename_document(file_path: str | Path, new_name: str, data_dir: Path) -> Doc
     resolved_path.rename(resolved_target)
     logger.info("重命名文档成功: %s -> %s", resolved_path, resolved_target)
     return DocumentRenameResult(
+        document_id="",
         old_path=str(resolved_path),
         new_path=str(resolved_target),
+        old_relative_path=resolved_path.resolve(strict=False).relative_to(data_dir.resolve(strict=False)).as_posix(),
+        new_relative_path=resolved_target.resolve(strict=False).relative_to(data_dir.resolve(strict=False)).as_posix(),
         new_name=resolved_target.name,
     )
 

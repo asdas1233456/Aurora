@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 from app.config import AppConfig
-from app.services.system_service import get_recent_documents, get_system_overview
+from app.services.system_service import get_recent_documents, get_system_overview, get_workspace_bootstrap
 
 
 def get_overview(config: AppConfig):
     """返回系统概览。"""
     return get_system_overview(config)
+
+
+def get_bootstrap(config: AppConfig):
+    """Return the combined first-screen workspace payload."""
+    return get_workspace_bootstrap(config)
 
 
 def get_latest_documents(config: AppConfig, limit: int = 5):

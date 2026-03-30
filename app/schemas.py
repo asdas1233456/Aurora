@@ -9,8 +9,10 @@ from dataclasses import dataclass, field
 class RetrievedChunk:
     """统一封装检索到的文本片段。"""
 
+    document_id: str
     file_name: str
     source_path: str
+    relative_path: str
     text: str
     score: float | None
     vector_score: float | None = None
@@ -23,8 +25,10 @@ class RetrievedChunk:
 class Citation:
     """回答引用来源。"""
 
+    document_id: str
     file_name: str
     source_path: str
+    relative_path: str
     snippet: str
     full_text: str
     score: float | None
@@ -55,6 +59,7 @@ class KnowledgeBaseStats:
 
     document_count: int
     chunk_count: int
+    mode: str = "sync"
     indexed_count: int = 0
     changed_count: int = 0
     pending_count: int = 0
@@ -70,6 +75,7 @@ class KnowledgeBaseJob:
 
     job_id: str
     status: str
+    mode: str
     stage: str
     progress: float
     message: str
@@ -88,6 +94,7 @@ class KnowledgeBaseJob:
 class DocumentSummary:
     """文档展示摘要。"""
 
+    document_id: str
     name: str
     path: str
     relative_path: str
@@ -109,7 +116,9 @@ class DocumentSummary:
 class DocumentDeleteResult:
     """文档删除结果。"""
 
+    deleted_ids: list[str]
     deleted_paths: list[str]
+    missing_ids: list[str]
     missing_paths: list[str]
 
 
@@ -117,8 +126,11 @@ class DocumentDeleteResult:
 class DocumentRenameResult:
     """文档重命名结果。"""
 
+    document_id: str
     old_path: str
     new_path: str
+    old_relative_path: str
+    new_relative_path: str
     new_name: str
 
 

@@ -1,4 +1,5 @@
 .venv/
+.venv-p1/
 __pycache__/
 *.py[cod]
 
@@ -7,11 +8,14 @@ logs/
 
 db/*.sqlite3
 db/document_catalog.json
+db/knowledge_base_jobs.json
 db/local_chunk_index.json
 
 frontend/node_modules/
 frontend/dist/
 frontend/.vite/
+frontend/test-results/
+frontend/playwright-report/
 
 .env
 .env.local

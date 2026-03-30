@@ -11,7 +11,7 @@ from llama_index.core.schema import NodeWithScore
 from app.config import AppConfig
 from app.schemas import RetrievedChunk
 from app.services.knowledge_base_service import get_vector_collection_count, load_index
-from app.services.local_index_service import load_local_index_chunks
+from app.services.local_index_service import load_local_index_chunks, search_local_index_chunks
 
 
 FOLLOW_UP_MARKERS = (
@@ -72,8 +72,10 @@ def _normalize_node(node_with_score: NodeWithScore) -> RetrievedChunk:
     text = node.get_content(metadata_mode="none")
 
     return RetrievedChunk(
+        document_id=str(metadata.get("document_id", "") or ""),
         file_name=file_name,
         source_path=source_path or file_name,
+        relative_path=str(metadata.get("relative_path", "") or file_name),
         text=text,
         score=node_with_score.score,
         vector_score=node_with_score.score,
@@ -191,8 +193,10 @@ def rerank_chunks(
         )
         reranked.append(
             RetrievedChunk(
+                document_id=chunk.document_id,
                 file_name=chunk.file_name,
                 source_path=chunk.source_path,
+                relative_path=chunk.relative_path,
                 text=chunk.text,
                 score=blended_score,
                 vector_score=chunk.vector_score,
@@ -215,8 +219,15 @@ def _retrieve_local_chunks(
 ) -> list[RetrievedChunk]:
     ranked_chunks: list[RetrievedChunk] = []
     seen_candidates: set[tuple[str, str]] = set()
+    candidate_items = search_local_index_chunks(
+        config,
+        f"{question}\n{retrieval_query}".strip(),
+        limit=max(candidate_limit * 3, candidate_limit),
+    )
+    if not candidate_items:
+        candidate_items = load_local_index_chunks(config)
 
-    for item in load_local_index_chunks(config):
+    for item in candidate_items:
         for candidate in _iter_local_candidates(item):
             text = str(candidate.get("text", "") or "").strip()
             if not text:
@@ -244,8 +255,10 @@ def _retrieve_local_chunks(
 
             ranked_chunks.append(
                 RetrievedChunk(
+                    document_id=str(candidate.get("document_id", "") or ""),
                     file_name=file_name,
                     source_path=source_path,
+                    relative_path=str(candidate.get("relative_path", "") or file_name),
                     text=text,
                     score=lexical_score,
                     vector_score=lexical_score,

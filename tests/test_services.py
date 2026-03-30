@@ -12,6 +12,7 @@ from app.services.catalog_service import (
     list_document_catalog,
     mark_document_failed,
     mark_documents_indexed,
+    sync_document_catalog,
     update_document_annotations,
 )
 from app.services.document_service import load_documents_from_paths, rename_document
@@ -104,7 +105,7 @@ class CatalogServiceTests(unittest.TestCase):
             self.assertEqual(indexed_documents[0].chunk_count, 3)
 
             file_path.write_text("python updated", encoding="utf-8")
-            changed_documents = list_document_catalog(config)
+            changed_documents, _ = sync_document_catalog(config, full_scan=True)
             self.assertEqual(changed_documents[0].status, "changed")
 
             mark_document_failed(
@@ -199,15 +200,19 @@ class RetrievalTests(unittest.TestCase):
     def test_rerank_chunks_prefers_lexical_match(self):
         chunks = [
             RetrievedChunk(
+                document_id="doc-a",
                 file_name="a.md",
                 source_path="a.md",
+                relative_path="a.md",
                 text="这里主要介绍 ADB 连接设备和前台 activity 查看方法。",
                 score=0.2,
                 vector_score=0.2,
             ),
             RetrievedChunk(
+                document_id="doc-b",
                 file_name="b.md",
                 source_path="b.md",
+                relative_path="b.md",
                 text="这是一段和 Linux 端口占用相关的排查说明。",
                 score=0.9,
                 vector_score=0.9,
@@ -329,7 +334,7 @@ class KnowledgeBaseJobTests(unittest.TestCase):
             job = start_rebuild_job(config)
 
             for _ in range(100):
-                latest_job = get_job(job.job_id)
+                latest_job = get_job(config, job.job_id)
                 if latest_job and latest_job.status in {"completed", "completed_with_errors", "failed", "cancelled"}:
                     break
                 time.sleep(0.05)
@@ -342,6 +347,68 @@ class KnowledgeBaseJobTests(unittest.TestCase):
             self.assertEqual(documents[0].status, "indexed")
             self.assertEqual(documents[0].chunk_count, 2)
             self.assertTrue(mock_add_nodes_with_embeddings.called)
+            self.assertTrue((config.db_dir / "knowledge_base_jobs.json").exists())
+
+    @patch("app.services.knowledge_base_job_service.get_collection_count", return_value=0)
+    @patch("app.services.knowledge_base_job_service.add_nodes_with_embeddings", return_value=1)
+    @patch("app.services.knowledge_base_job_service.create_nodes_from_documents")
+    @patch("app.services.knowledge_base_job_service.load_documents_from_paths")
+    def test_scan_mode_discovers_external_files_but_sync_mode_does_not(
+        self,
+        mock_load_documents_from_paths,
+        mock_create_nodes_from_documents,
+        mock_add_nodes_with_embeddings,
+        mock_get_collection_count,
+    ):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = make_config(Path(temp_dir))
+            config.data_dir.mkdir(parents=True, exist_ok=True)
+            first_path = config.data_dir / "01_python_testing.md"
+            second_path = config.data_dir / "02_linux_commands.md"
+            first_path.write_text("python", encoding="utf-8")
+
+            initial_documents = list_document_catalog(config)
+            mark_documents_indexed(
+                config,
+                {
+                    initial_documents[0].path: {
+                        "content_hash": initial_documents[0].content_hash,
+                        "chunk_count": 1,
+                    }
+                },
+            )
+            second_path.write_text("linux", encoding="utf-8")
+
+            mock_load_documents_from_paths.return_value = [SimpleNamespace()]
+            mock_create_nodes_from_documents.return_value = [SimpleNamespace()]
+
+            sync_job = start_rebuild_job(config, mode="sync")
+            for _ in range(100):
+                latest_sync_job = get_job(config, sync_job.job_id)
+                if latest_sync_job and latest_sync_job.status in {"completed", "completed_with_errors", "failed", "cancelled"}:
+                    break
+                time.sleep(0.05)
+            else:
+                self.fail("Sync knowledge base job did not finish in time.")
+
+            self.assertIsNotNone(latest_sync_job)
+            self.assertEqual(latest_sync_job.mode, "sync")
+            self.assertEqual(len(list_document_catalog(config)), 1)
+            self.assertFalse(mock_add_nodes_with_embeddings.called)
+
+            scan_job = start_rebuild_job(config, mode="scan")
+            for _ in range(100):
+                latest_scan_job = get_job(config, scan_job.job_id)
+                if latest_scan_job and latest_scan_job.status in {"completed", "completed_with_errors", "failed", "cancelled"}:
+                    break
+                time.sleep(0.05)
+            else:
+                self.fail("Scan knowledge base job did not finish in time.")
+
+            self.assertIsNotNone(latest_scan_job)
+            self.assertEqual(latest_scan_job.mode, "scan")
+            self.assertEqual(len(list_document_catalog(config)), 2)
+            self.assertTrue(mock_add_nodes_with_embeddings.called)
 
 
 class OfflineAnswerTests(unittest.TestCase):
@@ -353,8 +420,10 @@ class OfflineAnswerTests(unittest.TestCase):
                 return_value=(
                     [
                         RetrievedChunk(
+                            document_id="doc-linux",
                             file_name="linux.md",
                             source_path="linux.md",
+                            relative_path="linux.md",
                             text="Linux 下可以通过 lsof -i 或 ss -lntp 查看端口占用情况。",
                             score=0.82,
                             vector_score=0.82,
@@ -378,8 +447,10 @@ class OfflineAnswerTests(unittest.TestCase):
             "Linux 中如何快速定位端口占用问题？",
             [
                 RetrievedChunk(
+                    document_id="doc-linux",
                     file_name="linux.md",
                     source_path="linux.md",
+                    relative_path="linux.md",
                     text="""### 查看端口占用
 所属章节：Linux 常用命令 / 进程与端口检查
 

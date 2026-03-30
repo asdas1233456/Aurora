@@ -3,13 +3,10 @@ import {
   cancelKnowledgeJob,
   clearLogs,
   getDocumentPreview,
-  getDocuments,
   getCurrentKnowledgeJob,
-  getKnowledgeGraph,
-  getKnowledgeStatus,
   getLogs,
-  getOverview,
   getSettings,
+  getWorkspaceBootstrap,
   rebuildKnowledgeBase,
   removeDocuments,
   renameDocument,
@@ -332,6 +329,8 @@ const DEFAULT_SETTINGS_TEST = {
 };
 
 const TERMINAL_JOB_STATUSES = ["completed", "completed_with_errors", "failed", "cancelled"];
+const INITIAL_VISIBLE_CITATIONS = 3;
+const CITATION_PAGE_SIZE = 5;
 
 function readStoredJson(key, fallback) {
   try {
@@ -663,8 +662,8 @@ function SectionHeading({
   );
 }
 
-function Badge({ children, tone = "accent" }) {
-  return <span className={`badge is-${tone}`}>{children}</span>;
+function Badge({ children, tone = "accent", ...rest }) {
+  return <span className={`badge is-${tone}`} {...rest}>{children}</span>;
 }
 
 function StatCard({ label, value, detail, valueClassName = "", valueTitle = "" }) {
@@ -744,7 +743,7 @@ function IconButton({ icon, label, onClick }) {
   );
 }
 
-function FloatingWindow({ title, subtitle, onClose, children, wide = false }) {
+function FloatingWindow({ title, subtitle, onClose, children, wide = false, testId = "" }) {
   return (
     <div className="floating-window-backdrop" onClick={onClose} role="presentation">
       <section
@@ -753,6 +752,7 @@ function FloatingWindow({ title, subtitle, onClose, children, wide = false }) {
         role="dialog"
         aria-modal="true"
         aria-label={title}
+        data-testid={testId || undefined}
       >
         <header className="floating-window__header">
           <div className="floating-window__heading">
@@ -1198,8 +1198,8 @@ export default function App() {
   const [settingsTestState, setSettingsTestState] = useState(DEFAULT_SETTINGS_TEST);
   const [logsState, setLogsState] = useState(DEFAULT_LOGS);
   const [logsFilters, setLogsFilters] = useState(DEFAULT_LOG_FILTERS);
-  const [selectedDocumentPath, setSelectedDocumentPath] = useState("");
-  const [selectedDocumentPaths, setSelectedDocumentPaths] = useState([]);
+  const [selectedDocumentId, setSelectedDocumentId] = useState("");
+  const [selectedDocumentIds, setSelectedDocumentIds] = useState([]);
   const [renameDraft, setRenameDraft] = useState("");
   const [documentThemeDraft, setDocumentThemeDraft] = useState("");
   const [documentTagsDraft, setDocumentTagsDraft] = useState("");
@@ -1209,7 +1209,7 @@ export default function App() {
   const deferredDocumentSearch = useDeferredValue(documentSearch);
   const [uploadFiles, setUploadFiles] = useState([]);
   const [previewState, setPreviewState] = useState({
-    path: "",
+    documentId: "",
     content: "",
     loading: false,
     error: "",
@@ -1239,8 +1239,15 @@ export default function App() {
   const [activeSessionId, setActiveSessionId] = useState(() =>
     readStoredJson(STORAGE_KEYS.activeSession, "")
   );
+  const [expandedRetrievalMessages, setExpandedRetrievalMessages] = useState({});
+  const [visibleCitationCounts, setVisibleCitationCounts] = useState({});
+  const [openSettingsSections, setOpenSettingsSections] = useState(() =>
+    SETTINGS_SECTIONS.map((_, index) => index === 0)
+  );
+  const [dismissedKnowledgeJobId, setDismissedKnowledgeJobId] = useState("");
 
-  const previewPathRef = useRef("");
+  const trackedKnowledgeJobIdsRef = useRef(new Set());
+  const previewDocumentIdRef = useRef("");
   const chatAbortRef = useRef(null);
   const chatScrollRef = useRef(null);
   const uploadInputRef = useRef(null);
@@ -1260,7 +1267,7 @@ export default function App() {
   const filteredDocuments = documents.filter((item) => {
     const keyword = deferredDocumentSearch.trim().toLowerCase();
     const matchesKeyword = !keyword
-      || [item.name, item.extension, item.path, item.theme, ...(item.tags || []), inferCategory(item.name)].some((value) =>
+      || [item.name, item.extension, item.relative_path, item.theme, ...(item.tags || []), inferCategory(item.name)].some((value) =>
         String(value || "").toLowerCase().includes(keyword)
       );
     const matchesStatus = !documentStatusFilter || item.status === documentStatusFilter;
@@ -1269,7 +1276,7 @@ export default function App() {
   });
 
   const selectedDocument =
-    documents.find((item) => item.path === selectedDocumentPath) ?? null;
+    documents.find((item) => item.document_id === selectedDocumentId) ?? null;
 
   const documentThemes = Array.from(
     new Set(
@@ -1316,7 +1323,7 @@ export default function App() {
 
   const allVisibleDocumentsSelected =
     filteredDocuments.length > 0 &&
-    filteredDocuments.every((item) => selectedDocumentPaths.includes(item.path));
+    filteredDocuments.every((item) => selectedDocumentIds.includes(item.document_id));
 
   useEffect(() => {
     writeStoredJson(STORAGE_KEYS.runtime, runtimeConfig);
@@ -1363,10 +1370,22 @@ export default function App() {
   }, [selectedDocument]);
 
   useEffect(() => {
+    const currentJob = kbStatus.current_job;
+    if (!currentJob?.job_id) {
+      setDismissedKnowledgeJobId("");
+      return;
+    }
+    if (!TERMINAL_JOB_STATUSES.includes(currentJob.status)) {
+      setDismissedKnowledgeJobId("");
+    }
+  }, [kbStatus.current_job?.job_id, kbStatus.current_job?.status]);
+
+  useEffect(() => {
     Promise.all([
-      refreshOverviewData(),
-      refreshKnowledgeData(),
-      refreshGraphData(),
+      refreshWorkspaceBootstrap({
+        surface: "workspace",
+        loadPreview: false,
+      }),
       refreshSettingsData(),
       refreshLogsData(DEFAULT_LOG_FILTERS),
     ]);
@@ -1380,6 +1399,26 @@ export default function App() {
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (activeSection !== "knowledge") {
+      return;
+    }
+    if (!selectedDocumentId) {
+      if (previewState.documentId) {
+        loadDocumentPreview("");
+      }
+      return;
+    }
+    if (
+      previewState.documentId === selectedDocumentId
+      && !previewState.error
+      && (previewState.content || previewState.loading)
+    ) {
+      return;
+    }
+    loadDocumentPreview(selectedDocumentId);
+  }, [activeSection, selectedDocumentId]);
 
   useEffect(() => {
     if (!activeOverlay) {
@@ -1493,33 +1532,33 @@ export default function App() {
     }
   }
 
-  async function loadDocumentPreview(path) {
-    if (!path) {
-      previewPathRef.current = "";
-      setPreviewState({ path: "", content: "", loading: false, error: "" });
+  async function loadDocumentPreview(documentId) {
+    if (!documentId) {
+      previewDocumentIdRef.current = "";
+      setPreviewState({ documentId: "", content: "", loading: false, error: "" });
       return;
     }
 
-    previewPathRef.current = path;
-    setPreviewState({ path, content: "", loading: true, error: "" });
+    previewDocumentIdRef.current = documentId;
+    setPreviewState({ documentId, content: "", loading: true, error: "" });
 
     try {
-      const data = await getDocumentPreview(path);
-      if (previewPathRef.current !== path) {
+      const data = await getDocumentPreview(documentId);
+      if (previewDocumentIdRef.current !== documentId) {
         return;
       }
       setPreviewState({
-        path,
+        documentId,
         content: data.preview || "",
         loading: false,
         error: "",
       });
     } catch (error) {
-      if (previewPathRef.current !== path) {
+      if (previewDocumentIdRef.current !== documentId) {
         return;
       }
       setPreviewState({
-        path,
+        documentId,
         content: "",
         loading: false,
         error: getErrorMessage(error),
@@ -1527,63 +1566,141 @@ export default function App() {
     }
   }
 
-  async function refreshOverviewData() {
-    setOverviewLoading(true);
-    try {
-      const [nextOverview, nextStatus] = await Promise.all([
-        getOverview(runtimeConfig),
-        getKnowledgeStatus(runtimeConfig),
-      ]);
-      setOverview(nextOverview);
-      setKbStatus(nextStatus);
-      if (nextStatus.current_job && !TERMINAL_JOB_STATUSES.includes(nextStatus.current_job.status)) {
-        scheduleKnowledgeJobPolling();
-      } else {
-        stopKnowledgeJobPolling();
-      }
-      setSystemMessage("");
-    } catch (error) {
-      setSystemMessage(getErrorMessage(error));
-    } finally {
-      setOverviewLoading(false);
+  function syncKnowledgeJobState(nextStatus) {
+    if (nextStatus.current_job && !TERMINAL_JOB_STATUSES.includes(nextStatus.current_job.status)) {
+      trackKnowledgeJob(nextStatus.current_job);
+    }
+    setKbStatus(nextStatus);
+    if (nextStatus.current_job && !TERMINAL_JOB_STATUSES.includes(nextStatus.current_job.status)) {
+      scheduleKnowledgeJobPolling();
+    } else {
+      stopKnowledgeJobPolling();
     }
   }
 
-  async function refreshKnowledgeData(options = {}) {
-    const { keepSelection = true, preferredPath = "" } = options;
-    setKnowledgeLoading(true);
+  async function applyWorkspaceBootstrap(nextBootstrap, options = {}) {
+    const {
+      keepSelection = true,
+      preferredDocumentId = "",
+      loadPreview = activeSection === "knowledge",
+    } = options;
+    const nextOverview = nextBootstrap?.overview || DEFAULT_OVERVIEW;
+    const nextStatus = nextBootstrap?.knowledge_status || DEFAULT_KB_STATUS;
+    const nextDocuments = Array.isArray(nextBootstrap?.documents) ? nextBootstrap.documents : [];
+    const nextGraph = nextBootstrap?.graph || DEFAULT_GRAPH;
+    const nextIds = new Set(nextDocuments.map((item) => item.document_id));
+    const currentSelection =
+      preferredDocumentId && nextIds.has(preferredDocumentId)
+        ? preferredDocumentId
+        : keepSelection && nextIds.has(selectedDocumentId)
+          ? selectedDocumentId
+          : nextDocuments[0]?.document_id || "";
 
-    try {
-      const nextDocuments = await getDocuments();
-      const nextPaths = new Set(nextDocuments.map((item) => item.path));
-      const currentSelection =
-        preferredPath && nextPaths.has(preferredPath)
-          ? preferredPath
-          : keepSelection && nextPaths.has(selectedDocumentPath)
-            ? selectedDocumentPath
-            : nextDocuments[0]?.path || "";
+    setOverview(nextOverview);
+    setGraph(nextGraph);
+    syncKnowledgeJobState(nextStatus);
+    setDocuments(nextDocuments);
+    setSelectedDocumentIds((current) => current.filter((documentId) => nextIds.has(documentId)));
+    setSelectedDocumentId(currentSelection);
+    setRenameDraft(nextDocuments.find((item) => item.document_id === currentSelection)?.name || "");
 
-      setDocuments(nextDocuments);
-      setSelectedDocumentPaths((current) => current.filter((path) => nextPaths.has(path)));
-      setSelectedDocumentPath(currentSelection);
-      setRenameDraft(nextDocuments.find((item) => item.path === currentSelection)?.name || "");
-      setKnowledgeMessage("");
-
-      if (currentSelection) {
-        await loadDocumentPreview(currentSelection);
-      } else {
+    if (!currentSelection) {
+      if (previewState.documentId || previewState.content || previewState.error) {
         await loadDocumentPreview("");
       }
-    } catch (error) {
-      setKnowledgeMessage(getErrorMessage(error));
-    } finally {
-      setKnowledgeLoading(false);
+      return;
     }
+
+    const shouldLoadPreview =
+      loadPreview
+      && (
+        previewState.documentId !== currentSelection
+        || previewState.error
+        || !previewState.content
+      );
+    if (shouldLoadPreview) {
+      await loadDocumentPreview(currentSelection);
+    }
+  }
+
+  async function refreshWorkspaceBootstrap(options = {}) {
+    const {
+      keepSelection = true,
+      preferredDocumentId = "",
+      surface = "workspace",
+      clearMessages = true,
+      loadPreview = activeSection === "knowledge",
+      runtimeConfigOverride = runtimeConfig,
+    } = options;
+
+    setOverviewLoading(true);
+    setKnowledgeLoading(true);
+    setGraphLoading(true);
+
+    try {
+      const nextBootstrap = await getWorkspaceBootstrap(runtimeConfigOverride);
+      await applyWorkspaceBootstrap(nextBootstrap, {
+        keepSelection,
+        preferredDocumentId,
+        loadPreview,
+      });
+
+      if (clearMessages) {
+        if (surface === "workspace" || surface === "system") {
+          setSystemMessage("");
+        }
+        if (surface === "workspace" || surface === "knowledge") {
+          setKnowledgeMessage("");
+        }
+        if (surface === "workspace" || surface === "graph") {
+          setGraphMessage("");
+        }
+      }
+    } catch (error) {
+      const message = getErrorMessage(error);
+      if (surface === "knowledge") {
+        setKnowledgeMessage(message);
+      } else if (surface === "graph") {
+        setGraphMessage(message);
+      } else if (surface === "workspace") {
+        setSystemMessage(message);
+        setKnowledgeMessage(message);
+        setGraphMessage(message);
+      } else {
+        setSystemMessage(message);
+      }
+    } finally {
+      setOverviewLoading(false);
+      setKnowledgeLoading(false);
+      setGraphLoading(false);
+    }
+  }
+
+  async function refreshOverviewData(options = {}) {
+    await refreshWorkspaceBootstrap({
+      ...options,
+      surface: "system",
+      loadPreview: false,
+    });
+  }
+
+  async function refreshKnowledgeData(options = {}) {
+    await refreshWorkspaceBootstrap({
+      ...options,
+      surface: "knowledge",
+      loadPreview: true,
+    });
   }
 
   function stopKnowledgeJobPolling() {
     window.clearTimeout(jobPollTimerRef.current);
     jobPollTimerRef.current = 0;
+  }
+
+  function trackKnowledgeJob(job) {
+    if (job?.job_id) {
+      trackedKnowledgeJobIdsRef.current.add(job.job_id);
+    }
   }
 
   function scheduleKnowledgeJobPolling() {
@@ -1596,6 +1713,9 @@ export default function App() {
   async function refreshKnowledgeJob() {
     try {
       const nextJob = await getCurrentKnowledgeJob();
+      if (nextJob && !TERMINAL_JOB_STATUSES.includes(nextJob.status)) {
+        trackKnowledgeJob(nextJob);
+      }
       setKbStatus((current) => ({
         ...current,
         current_job: nextJob,
@@ -1608,11 +1728,10 @@ export default function App() {
 
       stopKnowledgeJobPolling();
       if (nextJob && TERMINAL_JOB_STATUSES.includes(nextJob.status)) {
-        await Promise.all([
-          refreshOverviewData(),
-          refreshKnowledgeData({ keepSelection: true }),
-          refreshGraphData(),
-        ]);
+        await refreshWorkspaceBootstrap({
+          keepSelection: true,
+          clearMessages: false,
+        });
       }
     } catch (error) {
       stopKnowledgeJobPolling();
@@ -1621,16 +1740,10 @@ export default function App() {
   }
 
   async function refreshGraphData() {
-    setGraphLoading(true);
-    try {
-      const nextGraph = await getKnowledgeGraph();
-      setGraph(nextGraph);
-      setGraphMessage("");
-    } catch (error) {
-      setGraphMessage(getErrorMessage(error));
-    } finally {
-      setGraphLoading(false);
-    }
+    await refreshWorkspaceBootstrap({
+      surface: "graph",
+      loadPreview: false,
+    });
   }
 
   async function refreshSettingsData() {
@@ -1682,68 +1795,70 @@ export default function App() {
   }
 
   async function handleApplyRuntimeConfig() {
-    await refreshOverviewData();
+    await refreshOverviewData({ runtimeConfigOverride: runtimeConfig });
     setRuntimeMessage("运行时请求头已应用。");
   }
 
   async function handleResetRuntimeConfig() {
     setRuntimeConfig(DEFAULT_RUNTIME_CONFIG);
     setRuntimeMessage("运行时请求头已清空。");
-    await refreshOverviewData();
+    await refreshOverviewData({ runtimeConfigOverride: DEFAULT_RUNTIME_CONFIG });
   }
 
-  async function handleSelectDocument(path) {
-    setSelectedDocumentPath(path);
-    setRenameDraft(documents.find((item) => item.path === path)?.name || "");
-    await loadDocumentPreview(path);
+  async function handleSelectDocument(documentId) {
+    setSelectedDocumentId(documentId);
+    setRenameDraft(documents.find((item) => item.document_id === documentId)?.name || "");
+    await loadDocumentPreview(documentId);
   }
 
-  function handleToggleDocument(path) {
-    setSelectedDocumentPaths((current) =>
-      current.includes(path)
-        ? current.filter((item) => item !== path)
-        : [...current, path]
+  function handleToggleDocument(documentId) {
+    setSelectedDocumentIds((current) =>
+      current.includes(documentId)
+        ? current.filter((item) => item !== documentId)
+        : [...current, documentId]
     );
   }
 
   function handleToggleAllVisibleDocuments() {
-    const visiblePaths = filteredDocuments.map((item) => item.path);
-    if (!visiblePaths.length) {
+    const visibleDocumentIds = filteredDocuments.map((item) => item.document_id);
+    if (!visibleDocumentIds.length) {
       return;
     }
 
-    setSelectedDocumentPaths((current) => {
-      if (visiblePaths.every((path) => current.includes(path))) {
-        return current.filter((path) => !visiblePaths.includes(path));
+    setSelectedDocumentIds((current) => {
+      if (visibleDocumentIds.every((documentId) => current.includes(documentId))) {
+        return current.filter((documentId) => !visibleDocumentIds.includes(documentId));
       }
-      return Array.from(new Set([...current, ...visiblePaths]));
+      return Array.from(new Set([...current, ...visibleDocumentIds]));
     });
   }
 
   async function handleRenameDocument() {
-    if (!selectedDocumentPath || !renameDraft.trim()) {
+    if (!selectedDocumentId || !renameDraft.trim()) {
       setKnowledgeMessage("请先选择一个文档，并输入新的文件名。");
       return;
     }
 
     try {
-      const result = await renameDocument(selectedDocumentPath, renameDraft.trim());
+      const result = await renameDocument(selectedDocumentId, renameDraft.trim());
       setKnowledgeMessage("文档已重命名。");
-      await Promise.all([
-        refreshKnowledgeData({ keepSelection: false, preferredPath: result.new_path }),
-        refreshOverviewData(),
-        refreshGraphData(),
-      ]);
+      await refreshWorkspaceBootstrap({
+        keepSelection: false,
+        preferredDocumentId: result.document_id,
+        surface: "knowledge",
+        clearMessages: false,
+        loadPreview: true,
+      });
     } catch (error) {
       setKnowledgeMessage(getErrorMessage(error));
     }
   }
 
   async function handleDeleteDocuments() {
-    const paths = selectedDocumentPaths.length
-      ? selectedDocumentPaths
-      : selectedDocumentPath
-        ? [selectedDocumentPath]
+    const paths = selectedDocumentIds.length
+      ? selectedDocumentIds
+      : selectedDocumentId
+        ? [selectedDocumentId]
         : [];
 
     if (!paths.length) {
@@ -1758,12 +1873,13 @@ export default function App() {
     try {
       await removeDocuments(paths);
       setKnowledgeMessage(`已删除 ${paths.length} 份文档。`);
-      setSelectedDocumentPaths([]);
-      await Promise.all([
-        refreshKnowledgeData({ keepSelection: false }),
-        refreshOverviewData(),
-        refreshGraphData(),
-      ]);
+      setSelectedDocumentIds([]);
+      await refreshWorkspaceBootstrap({
+        keepSelection: false,
+        surface: "knowledge",
+        clearMessages: false,
+        loadPreview: true,
+      });
     } catch (error) {
       setKnowledgeMessage(getErrorMessage(error));
     }
@@ -1779,11 +1895,12 @@ export default function App() {
       const result = await uploadDocumentFiles(uploadFiles);
       setKnowledgeMessage(`已上传 ${result.saved_count} 个文件。`);
       handleClearUploadFiles();
-      await Promise.all([
-        refreshKnowledgeData({ keepSelection: false }),
-        refreshOverviewData(),
-        refreshGraphData(),
-      ]);
+      await refreshWorkspaceBootstrap({
+        keepSelection: false,
+        surface: "knowledge",
+        clearMessages: false,
+        loadPreview: true,
+      });
     } catch (error) {
       setKnowledgeMessage(getErrorMessage(error));
     }
@@ -1792,8 +1909,29 @@ export default function App() {
   async function handleRebuildKnowledgeBase() {
     try {
       const job = await rebuildKnowledgeBase(runtimeConfig);
+      trackKnowledgeJob(job);
+      setDismissedKnowledgeJobId("");
       setKbStatus((current) => ({ ...current, current_job: job }));
       setKnowledgeMessage("知识库重建任务已启动。");
+      scheduleKnowledgeJobPolling();
+    } catch (error) {
+      setKnowledgeMessage(getErrorMessage(error));
+    }
+  }
+
+  async function handleRunKnowledgeBase(mode = "sync") {
+    try {
+      const job = await rebuildKnowledgeBase(runtimeConfig, undefined, mode);
+      trackKnowledgeJob(job);
+      setDismissedKnowledgeJobId("");
+      setKbStatus((current) => ({ ...current, current_job: job }));
+      if (mode === "reset") {
+        setKnowledgeMessage("完全重置任务已启动，会重新扫描并全量重建索引。");
+      } else if (mode === "scan") {
+        setKnowledgeMessage("扫描目录任务已启动，会先发现新文件再同步索引。");
+      } else {
+        setKnowledgeMessage("快速同步任务已启动，只处理待同步文档。");
+      }
       scheduleKnowledgeJobPolling();
     } catch (error) {
       setKnowledgeMessage(getErrorMessage(error));
@@ -1808,6 +1946,7 @@ export default function App() {
 
     try {
       const job = await cancelKnowledgeJob(jobId);
+      trackKnowledgeJob(job);
       setKbStatus((current) => ({ ...current, current_job: job }));
       setKnowledgeMessage("已发送取消请求，系统会在安全节点停止任务。");
       scheduleKnowledgeJobPolling();
@@ -1816,13 +1955,20 @@ export default function App() {
     }
   }
 
-  async function handleSaveDocumentMetadata(targetPaths = []) {
-    const paths = targetPaths.length
-      ? targetPaths
-      : selectedDocumentPaths.length
-        ? selectedDocumentPaths
-        : selectedDocumentPath
-          ? [selectedDocumentPath]
+  function handleDismissKnowledgeJobWindow() {
+    if (!kbStatus.current_job?.job_id) {
+      return;
+    }
+    setDismissedKnowledgeJobId(kbStatus.current_job.job_id);
+  }
+
+  async function handleSaveDocumentMetadata(targetDocumentIds = []) {
+    const paths = targetDocumentIds.length
+      ? targetDocumentIds
+      : selectedDocumentIds.length
+        ? selectedDocumentIds
+        : selectedDocumentId
+          ? [selectedDocumentId]
           : [];
 
     if (!paths.length) {
@@ -1837,10 +1983,12 @@ export default function App() {
         tags: parseTagsInput(documentTagsDraft),
       });
       setKnowledgeMessage(`已更新 ${paths.length} 份文档的主题与标签。`);
-      await Promise.all([
-        refreshKnowledgeData({ keepSelection: true }),
-        refreshGraphData(),
-      ]);
+      await refreshWorkspaceBootstrap({
+        keepSelection: true,
+        surface: "knowledge",
+        clearMessages: false,
+        loadPreview: false,
+      });
     } catch (error) {
       setKnowledgeMessage(getErrorMessage(error));
     } finally {
@@ -1850,6 +1998,10 @@ export default function App() {
 
   function handleSettingsChange(key, value) {
     setSettingsForm((current) => ({ ...current, [key]: value }));
+  }
+
+  function handleToggleSettingsSection(index) {
+    setOpenSettingsSections((current) => current.map((item, idx) => (idx === index ? !item : item)));
   }
 
   function handleApplyProviderPreset(mode, presetKey) {
@@ -1994,10 +2146,38 @@ export default function App() {
       return;
     }
 
-    updateSession(activeSession.id, (session) => ({
+  updateSession(activeSession.id, (session) => ({
       ...session,
       title: "新会话",
       messages: [],
+    }));
+  }
+
+  function handleToggleRetrievalDetails(messageId) {
+    const nextExpanded = !expandedRetrievalMessages[messageId];
+    setExpandedRetrievalMessages((current) => ({
+      ...current,
+      [messageId]: nextExpanded,
+    }));
+    if (!nextExpanded) {
+      setVisibleCitationCounts((current) => ({
+        ...current,
+        [messageId]: INITIAL_VISIBLE_CITATIONS,
+      }));
+    }
+  }
+
+  function handleShowMoreCitations(messageId, totalCount) {
+    setVisibleCitationCounts((current) => ({
+      ...current,
+      [messageId]: Math.min((current[messageId] || INITIAL_VISIBLE_CITATIONS) + CITATION_PAGE_SIZE, totalCount),
+    }));
+  }
+
+  function handleCollapseCitations(messageId) {
+    setVisibleCitationCounts((current) => ({
+      ...current,
+      [messageId]: INITIAL_VISIBLE_CITATIONS,
     }));
   }
 
@@ -2123,6 +2303,10 @@ export default function App() {
   }
 
   const demoMode = !overview.llm_api_ready || !overview.embedding_api_ready;
+  const modelReadyCount = [overview.llm_api_ready, overview.embedding_api_ready].filter(Boolean).length;
+  const pendingWorkCount = kbStatus.changed_count + kbStatus.pending_count;
+  const providerSummary = `LLM ${overview.llm_api_ready ? overview.llm_provider : "未配置"} · Embedding ${overview.embedding_api_ready ? overview.embedding_provider : "未配置"}`;
+  const activitySummary = `${formatNumber(sessions.length)} 个会话 · ${formatNumber(logsState.summary?.line_count || 0)} 行日志`;
 
   const navStatuses = {
     overview: {
@@ -2357,6 +2541,7 @@ export default function App() {
           subtitle="在独立窗口中查看正文，避免主界面被长文本压住。"
           onClose={() => setActiveOverlay("")}
           wide
+          testId="preview-overlay"
         >
           <div className="floating-window__stack">
             {selectedDocument ? (
@@ -2373,7 +2558,7 @@ export default function App() {
             ) : previewState.error ? (
               <div className="preview-box preview-box--muted">{previewState.error}</div>
             ) : previewState.content ? (
-              <div className="preview-box preview-box--content preview-box--window">{previewState.content}</div>
+              <div className="preview-box preview-box--content preview-box--window" data-testid="preview-content">{previewState.content}</div>
             ) : (
               <div className="preview-box preview-box--muted">从左侧选择文档后，这里会显示预览内容。</div>
             )}
@@ -2588,7 +2773,7 @@ export default function App() {
                 </thead>
                 <tbody>
                   {recentDocuments.map((item) => (
-                    <tr key={item.path}>
+                    <tr key={item.document_id}>
                       <td>{item.name}</td>
                       <td>{item.theme || inferCategory(item.name)}</td>
                       <td>{String(item.extension || "").toUpperCase()}</td>
@@ -2634,56 +2819,46 @@ export default function App() {
                 {kbStatus.ready ? "索引已就绪" : "等待重建"}
               </Badge>
               {currentJob ? (
-                <Badge tone={jobActive ? "accent" : currentJob.status === "completed_with_errors" ? "warning" : "success"}>
+                <Badge tone={jobActive ? "accent" : currentJob.status === "completed_with_errors" ? "warning" : "success"} data-testid="knowledge-job-status">
                   {currentJob.status}
                 </Badge>
               ) : null}
-              <button className="ghost-button" type="button" onClick={() => refreshKnowledgeData()}>
+              <button className="ghost-button" type="button" data-testid="refresh-knowledge-button" onClick={() => refreshKnowledgeData()}>
                 {knowledgeLoading ? "刷新中..." : "刷新"}
               </button>
               {jobActive ? (
-                <button className="danger-button" type="button" onClick={handleCancelKnowledgeBaseJob}>
+                <button className="danger-button" type="button" data-testid="cancel-knowledge-job-button" onClick={handleCancelKnowledgeBaseJob}>
                   取消任务
                 </button>
               ) : (
-                <button className="button" type="button" onClick={handleRebuildKnowledgeBase}>
+                <button className="button" type="button" data-testid="rebuild-knowledge-button" onClick={handleRebuildKnowledgeBase}>
                   开始重建
                 </button>
               )}
+              {!jobActive ? (
+                <div className="knowledge-action-group" data-testid="knowledge-action-group">
+                  <button className="button" type="button" data-testid="sync-knowledge-button" onClick={() => handleRunKnowledgeBase("sync")}>
+                    快速同步
+                  </button>
+                  <button className="secondary-button" type="button" data-testid="scan-knowledge-button" onClick={() => handleRunKnowledgeBase("scan")}>
+                    扫描目录
+                  </button>
+                  <button className="danger-button" type="button" data-testid="reset-knowledge-button" onClick={() => handleRunKnowledgeBase("reset")}>
+                    完全重置
+                  </button>
+                </div>
+              ) : null}
             </>
           }
         />
 
         {knowledgeMessage ? <p className="notice">{knowledgeMessage}</p> : null}
 
-        {currentJob ? (
-          <Panel kicker="任务" title="知识库重建进度" description="异步任务会持续同步文档、切片和向量写入状态。">
-            <div className="stack">
-              <div className="key-value-list">
-                <div className="key-value"><span>阶段</span><strong>{currentJob.stage || "--"}</strong></div>
-                <div className="key-value"><span>状态</span><strong>{currentJob.status || "--"}</strong></div>
-                <div className="key-value"><span>文档进度</span><strong>{formatNumber(currentJob.processed_documents || 0)} / {formatNumber(currentJob.total_documents || 0)}</strong></div>
-                <div className="key-value"><span>切片进度</span><strong>{formatNumber(currentJob.processed_chunks || 0)} / {formatNumber(currentJob.total_chunks || 0)}</strong></div>
-              </div>
-              <div className="progress-bar">
-                <div className="progress-bar__fill" style={{ width: formatPercent(currentJob.progress || 0) }} />
-              </div>
-              <div className="toolbar">
-                <span className="metric-chip">进度 {formatPercent(currentJob.progress || 0)}</span>
-                {currentJob.started_at ? <span className="metric-chip">开始 {formatDate(currentJob.started_at)}</span> : null}
-                {currentJob.finished_at ? <span className="metric-chip">结束 {formatDate(currentJob.finished_at)}</span> : null}
-              </div>
-              <p className="muted-text">{currentJob.message || "等待任务状态更新。"}</p>
-              {currentJob.error ? <p className="notice is-error">{currentJob.error}</p> : null}
-            </div>
-          </Panel>
-        ) : null}
-
         <Panel
           kicker="状态"
           title="当前知识库快照"
           description="在改动文档之前，先快速确认索引状态与当前选中项。"
-          className="panel--dense"
+          className="panel--dense panel--logs-toolbar"
           onDescriptionClick={() =>
             openNoteOverlay({
               title: "当前知识库快照说明",
@@ -2695,7 +2870,7 @@ export default function App() {
           }
           descriptionButtonLabel="查看知识库快照说明"
         >
-          <div className="knowledge-snapshot">
+          <div className="knowledge-snapshot" data-testid="knowledge-snapshot">
             <CompactMetric label="文档数" value={formatNumber(documents.length)} />
             <CompactMetric label="切片数" value={formatNumber(kbStatus.chunk_count)} />
             <CompactMetric label="已入库" value={formatNumber(kbStatus.indexed_count)} />
@@ -2718,7 +2893,7 @@ export default function App() {
                   <span className="metric-chip">未选择</span>
                 )}
               </div>
-              <strong className="knowledge-snapshot__selected-name" title={selectedDocument?.name || "--"}>
+              <strong className="knowledge-snapshot__selected-name" title={selectedDocument?.name || "--"} data-testid="selected-document-name">
                 {selectedDocument ? selectedDocument.name : "点击下方文档开始预览"}
               </strong>
               <p className="knowledge-snapshot__selected-note">
@@ -2728,14 +2903,14 @@ export default function App() {
           </div>
         </Panel>
 
-        <div className="split-layout">
+        <div className="split-layout split-layout--knowledge">
           <Panel
             kicker="文档区"
             title="源文档列表"
             description="支持筛选、批量选择、上传和删除，适合集中处理知识资料。"
             actions={
               <div className="selection-summary">
-                <Badge tone="accent">已选 {selectedDocumentPaths.length} 个</Badge>
+                <Badge tone="accent">已选 {selectedDocumentIds.length} 个</Badge>
                 <button className="ghost-button" type="button" onClick={handleToggleAllVisibleDocuments}>
                   {allVisibleDocumentsSelected ? "取消当前筛选项" : "全选当前筛选项"}
                 </button>
@@ -2836,14 +3011,14 @@ export default function App() {
                 <button className="ghost-button" type="button" onClick={handleDeleteDocuments}>
                   删除所选
                 </button>
-                <button className="ghost-button" type="button" disabled={metadataSaving} onClick={() => handleSaveDocumentMetadata(selectedDocumentPaths)}>
+                <button className="ghost-button" type="button" disabled={metadataSaving} onClick={() => handleSaveDocumentMetadata(selectedDocumentIds)}>
                   批量保存主题/标签
                 </button>
               </div>
 
               {filteredDocuments.length ? (
                 <div className="table-wrap">
-                  <table className="data-table">
+                  <table className="data-table" data-testid="documents-table">
                     <thead>
                       <tr>
                         <th>选择</th>
@@ -2860,18 +3035,19 @@ export default function App() {
                     <tbody>
                       {filteredDocuments.map((item) => (
                         <tr
-                          key={item.path}
-                          className={item.path === selectedDocumentPath ? "is-selected-row" : ""}
+                          key={item.document_id}
+                          className={item.document_id === selectedDocumentId ? "is-selected-row" : ""}
+                          data-testid={`document-row-${item.document_id}`}
                         >
                           <td>
                             <input
-                              checked={selectedDocumentPaths.includes(item.path)}
-                              onChange={() => handleToggleDocument(item.path)}
+                              checked={selectedDocumentIds.includes(item.document_id)}
+                              onChange={() => handleToggleDocument(item.document_id)}
                               type="checkbox"
                             />
                           </td>
                           <td>
-                            <button className="data-row-button" type="button" onClick={() => handleSelectDocument(item.path)}>
+                            <button className="data-row-button" type="button" data-testid={`document-select-${item.document_id}`} onClick={() => handleSelectDocument(item.document_id)}>
                               {item.name}
                             </button>
                           </td>
@@ -2902,6 +3078,7 @@ export default function App() {
                 className="ghost-button"
                 type="button"
                 disabled={!selectedDocument}
+                data-testid="open-preview-button"
                 onClick={() => setActiveOverlay("preview")}
               >
                 打开预览窗口
@@ -2913,7 +3090,7 @@ export default function App() {
                 <div className="preview-summary">
                   <span className="metric-chip">{String(selectedDocument.extension || "file").toUpperCase()}</span>
                   <span className={`status-pill is-${selectedDocument.status}`}>{selectedDocument.status}</span>
-                  <strong className="preview-summary__name" title={selectedDocument.name}>
+                  <strong className="preview-summary__name" title={selectedDocument.name} data-testid="document-preview-name">
                     {selectedDocument.name}
                   </strong>
                 </div>
@@ -2955,9 +3132,9 @@ export default function App() {
                 <button className="button" type="button" disabled={!selectedDocument || metadataSaving} onClick={() => handleSaveDocumentMetadata()}>
                   {metadataSaving ? "保存中..." : "保存当前文档元数据"}
                 </button>
-                {selectedDocumentPaths.length > 1 ? (
-                  <button className="ghost-button" type="button" disabled={metadataSaving} onClick={() => handleSaveDocumentMetadata(selectedDocumentPaths)}>
-                    应用到已选 {selectedDocumentPaths.length} 个文档
+                {selectedDocumentIds.length > 1 ? (
+                  <button className="ghost-button" type="button" disabled={metadataSaving} onClick={() => handleSaveDocumentMetadata(selectedDocumentIds)}>
+                    应用到已选 {selectedDocumentIds.length} 个文档
                   </button>
                 ) : null}
               </div>
@@ -2980,6 +3157,7 @@ export default function App() {
                   className="button preview-launcher-card__button"
                   type="button"
                   disabled={!selectedDocument}
+                  data-testid="preview-launcher-button"
                   onClick={() => setActiveOverlay("preview")}
                 >
                   查看全文
@@ -3072,7 +3250,7 @@ export default function App() {
               </div>
             </aside>
 
-            <div className="chat-shell">
+            <div className={`chat-shell ${activeMessages.length ? "is-active" : "is-empty"}`}>
               <div className="chat-shell__top">
                 <div className="chat-summary">
                   <p className="chat-summary__eyebrow">当前会话</p>
@@ -3089,68 +3267,118 @@ export default function App() {
                 <div className="chat-stream" ref={chatScrollRef}>
                   {activeMessages.length ? (
                     <div className="chat-list">
-                      {activeMessages.map((message) => (
-                        <article
-                          className={`chat-bubble ${message.role === "user" ? "is-user" : "is-assistant"}`}
-                          key={message.id}
-                        >
-                          <div className="chat-bubble__header">
-                            <div className="chat-bubble__identity">
-                              <span className="chat-bubble__role">{message.role === "user" ? "你" : "Aurora 助手"}</span>
-                              <span className="chat-bubble__time">{formatDate(message.createdAt)}</span>
+                      {activeMessages.map((message) => {
+                        const hasRetrievalDetails = Boolean(
+                          message.meta?.rewritten_question || message.meta?.retrieval_query || message.citations?.length
+                        );
+                        const retrievalExpanded = Boolean(expandedRetrievalMessages[message.id]);
+                        const visibleCitationCount = visibleCitationCounts[message.id] || INITIAL_VISIBLE_CITATIONS;
+                        const visibleCitations = retrievalExpanded
+                          ? (message.citations || []).slice(0, visibleCitationCount)
+                          : [];
+                        const remainingCitations = Math.max((message.citations?.length || 0) - visibleCitationCount, 0);
+
+                        return (
+                          <article
+                            className={`chat-bubble ${message.role === "user" ? "is-user" : "is-assistant"}`}
+                            key={message.id}
+                          >
+                            <div className="chat-bubble__header">
+                              <div className="chat-bubble__identity">
+                                <span className="chat-bubble__role">{message.role === "user" ? "你" : "Aurora 助手"}</span>
+                                <span className="chat-bubble__time">{formatDate(message.createdAt)}</span>
+                              </div>
+                              {message.streaming ? <Badge tone="accent">生成中</Badge> : null}
                             </div>
-                            {message.streaming ? <Badge tone="accent">生成中</Badge> : null}
-                          </div>
-                          <div className="chat-bubble__content">
-                            {message.content || (message.streaming ? "正在生成回答..." : "")}
-                          </div>
-                          {message.meta ? (
-                            <div className="chat-bubble__meta">
-                              {message.meta.retrieved_count ? <span className="metric-chip">命中 {message.meta.retrieved_count}</span> : null}
-                              {message.meta.retrieval_ms ? <span className="metric-chip">检索 {formatDuration(message.meta.retrieval_ms)}</span> : null}
-                              {message.meta.generation_ms ? <span className="metric-chip">生成 {formatDuration(message.meta.generation_ms)}</span> : null}
-                              {message.meta.total_ms ? <span className="metric-chip">总耗时 {formatDuration(message.meta.total_ms)}</span> : null}
-                              {message.meta.confidence ? <span className="metric-chip">置信度 {formatConfidence(message.meta.confidence)}</span> : null}
-                              {message.meta.rewritten_question ? <span className="metric-chip">已改写检索</span> : null}
+                            <div className="chat-bubble__content">
+                              {message.content || (message.streaming ? "正在生成回答..." : "")}
                             </div>
-                          ) : null}
-                          {message.meta?.rewritten_question ? (
-                            <div className="chat-bubble__meta-block">
-                              <strong>检索改写</strong>
-                              <p>{message.meta.rewritten_question}</p>
-                            </div>
-                          ) : null}
-                          {message.meta?.retrieval_query ? (
-                            <div className="chat-bubble__meta-block">
-                              <strong>检索 Query</strong>
-                              <p>{message.meta.retrieval_query}</p>
-                            </div>
-                          ) : null}
-                          {message.citations?.length ? (
-                            <div className="citation-list">
-                              {message.citations.map((citation, index) => (
-                                <div className="citation-card" key={`${message.id}-${index}`}>
-                                  <div className="citation-card__head">
-                                    <strong>{citation.file_name}</strong>
-                                    <span className="metric-chip">Score {formatConfidence(citation.score)}</span>
+                            {message.meta ? (
+                              <div className="chat-bubble__meta">
+                                {message.meta.retrieved_count ? <span className="metric-chip">命中 {message.meta.retrieved_count}</span> : null}
+                                {message.meta.retrieval_ms ? <span className="metric-chip">检索 {formatDuration(message.meta.retrieval_ms)}</span> : null}
+                                {message.meta.generation_ms ? <span className="metric-chip">生成 {formatDuration(message.meta.generation_ms)}</span> : null}
+                                {message.meta.total_ms ? <span className="metric-chip">总耗时 {formatDuration(message.meta.total_ms)}</span> : null}
+                                {message.meta.confidence ? <span className="metric-chip">置信度 {formatConfidence(message.meta.confidence)}</span> : null}
+                                {message.meta.rewritten_question ? <span className="metric-chip">已改写检索</span> : null}
+                              </div>
+                            ) : null}
+                            {hasRetrievalDetails ? (
+                              <div className="retrieval-panel">
+                                <button
+                                  className="ghost-button retrieval-panel__toggle"
+                                  type="button"
+                                  onClick={() => handleToggleRetrievalDetails(message.id)}
+                                >
+                                  {retrievalExpanded
+                                    ? "收起检索详情"
+                                    : `查看检索详情${message.citations?.length ? `（${message.citations.length} 条引用）` : ""}`}
+                                </button>
+                              </div>
+                            ) : null}
+                            {retrievalExpanded && message.meta?.rewritten_question ? (
+                              <div className="chat-bubble__meta-block">
+                                <strong>检索改写</strong>
+                                <p>{message.meta.rewritten_question}</p>
+                              </div>
+                            ) : null}
+                            {retrievalExpanded && message.meta?.retrieval_query ? (
+                              <div className="chat-bubble__meta-block">
+                                <strong>检索 Query</strong>
+                                <p>{message.meta.retrieval_query}</p>
+                              </div>
+                            ) : null}
+                            {retrievalExpanded && message.citations?.length ? (
+                              <div className="citation-list">
+                                <div className="citation-list__summary">
+                                  <span className="muted-text">
+                                    仅展示最相关的 {visibleCitations.length} / {message.citations.length} 条引用
+                                  </span>
+                                  <div className="toolbar">
+                                    {remainingCitations > 0 ? (
+                                      <button
+                                        className="ghost-button"
+                                        type="button"
+                                        onClick={() => handleShowMoreCitations(message.id, message.citations.length)}
+                                      >
+                                        再显示 {Math.min(CITATION_PAGE_SIZE, remainingCitations)} 条
+                                      </button>
+                                    ) : null}
+                                    {message.citations.length > INITIAL_VISIBLE_CITATIONS && visibleCitationCount > INITIAL_VISIBLE_CITATIONS ? (
+                                      <button
+                                        className="ghost-button"
+                                        type="button"
+                                        onClick={() => handleCollapseCitations(message.id)}
+                                      >
+                                        收起引用
+                                      </button>
+                                    ) : null}
                                   </div>
-                                  <div className="citation-card__meta">
-                                    {citation.theme ? <span className="metric-chip">{citation.theme}</span> : null}
-                                    {citation.tags?.length ? <span className="metric-chip">{citation.tags.join(", ")}</span> : null}
-                                  </div>
-                                  <p>{citation.snippet}</p>
-                                  {citation.full_text ? (
-                                    <details className="citation-card__details">
-                                      <summary>展开原始片段</summary>
-                                      <div className="citation-card__full">{citation.full_text}</div>
-                                    </details>
-                                  ) : null}
                                 </div>
-                              ))}
-                            </div>
-                          ) : null}
-                        </article>
-                      ))}
+                                {visibleCitations.map((citation, index) => (
+                                  <div className="citation-card" key={`${message.id}-${index}`}>
+                                    <div className="citation-card__head">
+                                      <strong>{citation.file_name}</strong>
+                                      <span className="metric-chip">Score {formatConfidence(citation.score)}</span>
+                                    </div>
+                                    <div className="citation-card__meta">
+                                      {citation.theme ? <span className="metric-chip">{citation.theme}</span> : null}
+                                      {citation.tags?.length ? <span className="metric-chip">{citation.tags.join(", ")}</span> : null}
+                                    </div>
+                                    <p>{citation.snippet}</p>
+                                    {citation.full_text ? (
+                                      <details className="citation-card__details">
+                                        <summary>展开原始片段</summary>
+                                        <div className="citation-card__full">{citation.full_text}</div>
+                                      </details>
+                                    ) : null}
+                                  </div>
+                                ))}
+                              </div>
+                            ) : null}
+                          </article>
+                        );
+                      })}
                     </div>
                   ) : (
                     <EmptyState title="先开始一次问答" description="可以点击推荐问题，也可以直接输入你自己的测试场景问题。" />
@@ -3318,58 +3546,57 @@ export default function App() {
           kicker="快捷预设"
           title="模型厂商辅助填写"
           description="点击下方图标按钮，可自动填入推荐的提供方、模型名与接口地址，后续只需要补密钥即可。"
+          className="panel--dense panel--settings-presets"
         >
           <div className="provider-presets-grid">
-            <div className="provider-preset-group">
-              <div className="provider-preset-group__header">
-                <p className="panel__kicker">LLM 预设</p>
-                <p className="muted-text">适合快速切换聊天模型厂商。</p>
-              </div>
-              <div className="provider-preset-list">
-                {LLM_PRESET_KEYS.map((presetKey) => {
-                  const preset = PROVIDER_PRESETS[presetKey];
-                  return (
-                    <button
-                      className="provider-preset"
-                      key={`llm-${preset.key}`}
-                      type="button"
-                      onClick={() => handleApplyProviderPreset("llm", preset.key)}
-                    >
-                      <ProviderMark badge={preset.badge} />
-                      <span className="provider-preset__copy">
-                        <strong>{preset.label}</strong>
-                        <span>{preset.description}</span>
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
+            <div className="provider-preset-group__header">
+              <p className="panel__kicker">LLM 预设</p>
+              <p className="muted-text">适合快速切换聊天模型厂商。</p>
             </div>
 
-            <div className="provider-preset-group">
-              <div className="provider-preset-group__header">
-                <p className="panel__kicker">Embedding 预设</p>
-                <p className="muted-text">常用向量模型也可以通过图标快速带入。</p>
-              </div>
-              <div className="provider-preset-list">
-                {EMBEDDING_PRESET_KEYS.map((presetKey) => {
-                  const preset = PROVIDER_PRESETS[presetKey];
-                  return (
-                    <button
-                      className="provider-preset"
-                      key={`embedding-${preset.key}`}
-                      type="button"
-                      onClick={() => handleApplyProviderPreset("embedding", preset.key)}
-                    >
-                      <ProviderMark badge={preset.badge} />
-                      <span className="provider-preset__copy">
-                        <strong>{preset.label}</strong>
-                        <span>{preset.description}</span>
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
+            <div className="provider-preset-group__header">
+              <p className="panel__kicker">Embedding 预设</p>
+              <p className="muted-text">常用向量模型也可以通过图标快速带入。</p>
+            </div>
+
+            <div className="provider-preset-list">
+              {LLM_PRESET_KEYS.map((presetKey) => {
+                const preset = PROVIDER_PRESETS[presetKey];
+                return (
+                  <button
+                    className="provider-preset"
+                    key={`llm-${preset.key}`}
+                    type="button"
+                    onClick={() => handleApplyProviderPreset("llm", preset.key)}
+                  >
+                    <ProviderMark badge={preset.badge} />
+                    <span className="provider-preset__copy">
+                      <strong>{preset.label}</strong>
+                      <span>{preset.description}</span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="provider-preset-list">
+              {EMBEDDING_PRESET_KEYS.map((presetKey) => {
+                const preset = PROVIDER_PRESETS[presetKey];
+                return (
+                  <button
+                    className="provider-preset"
+                    key={`embedding-${preset.key}`}
+                    type="button"
+                    onClick={() => handleApplyProviderPreset("embedding", preset.key)}
+                  >
+                    <ProviderMark badge={preset.badge} />
+                    <span className="provider-preset__copy">
+                      <strong>{preset.label}</strong>
+                      <span>{preset.description}</span>
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           </div>
         </Panel>
@@ -3401,38 +3628,59 @@ export default function App() {
         ) : null}
 
         <div className="settings-sections">
-          {SETTINGS_SECTIONS.map((section) => (
-            <Panel key={section.title} kicker="配置" title={section.title} description={section.description}>
-              <div className="two-column">
-                {section.fields.map((field) => (
-                  <Field key={field.key} label={field.label} hint={field.hint} error={settingsErrors[field.key]}>
-                    {field.type === "select" ? (
-                      <select
-                        className="select"
-                        value={settingsForm[field.key]}
-                        onChange={(event) => handleSettingsChange(field.key, event.target.value)}
-                      >
-                        {field.options.map((option) => (
-                          <option key={getFieldOptionValue(option)} value={getFieldOptionValue(option)}>
-                            {getFieldOptionLabel(option)}
-                          </option>
-                        ))}
-                      </select>
-                    ) : (
-                      <input
-                        className="input"
-                        type={field.type}
-                        step={field.step}
-                        placeholder={field.placeholder}
-                        value={settingsForm[field.key]}
-                        onChange={(event) => handleSettingsChange(field.key, event.target.value)}
-                      />
-                    )}
-                  </Field>
-                ))}
-              </div>
-            </Panel>
-          ))}
+          {SETTINGS_SECTIONS.map((section, index) => {
+            const isOpen = openSettingsSections[index] ?? index === 0;
+
+            return (
+              <Panel
+                key={section.title}
+                kicker="配置"
+                title={section.title}
+                description={section.description}
+                className={`panel--dense panel--settings-section ${isOpen ? "is-open" : ""}`.trim()}
+                actions={
+                  <button
+                    className="ghost-button settings-section-toggle"
+                    type="button"
+                    onClick={() => handleToggleSettingsSection(index)}
+                  >
+                    {isOpen ? "收起" : "展开"}
+                  </button>
+                }
+              >
+                {isOpen ? (
+                  <div className="two-column">
+                    {section.fields.map((field) => (
+                      <Field key={field.key} label={field.label} hint={field.hint} error={settingsErrors[field.key]}>
+                        {field.type === "select" ? (
+                          <select
+                            className="select"
+                            value={settingsForm[field.key]}
+                            onChange={(event) => handleSettingsChange(field.key, event.target.value)}
+                          >
+                            {field.options.map((option) => (
+                              <option key={getFieldOptionValue(option)} value={getFieldOptionValue(option)}>
+                                {getFieldOptionLabel(option)}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          <input
+                            className="input"
+                            type={field.type}
+                            step={field.step}
+                            placeholder={field.placeholder}
+                            value={settingsForm[field.key]}
+                            onChange={(event) => handleSettingsChange(field.key, event.target.value)}
+                          />
+                        )}
+                      </Field>
+                    ))}
+                  </div>
+                ) : null}
+              </Panel>
+            );
+          })}
         </div>
       </div>
     );
@@ -3518,9 +3766,18 @@ export default function App() {
           </div>
 
           <div className="logs-inline-summary">
-            <CompactMetric label="存在" value={logsState.summary?.exists ? "是" : "否"} />
-            <CompactMetric label="大小" value={formatBytes(logsState.summary?.size_bytes || 0)} />
-            <CompactMetric label="行数" value={formatNumber(logsState.summary?.line_count || 0)} />
+            <div className="logs-summary-chip">
+              <span className="logs-summary-chip__label">存在</span>
+              <strong className="logs-summary-chip__value">{logsState.summary?.exists ? "是" : "否"}</strong>
+            </div>
+            <div className="logs-summary-chip">
+              <span className="logs-summary-chip__label">大小</span>
+              <strong className="logs-summary-chip__value">{formatBytes(logsState.summary?.size_bytes || 0)}</strong>
+            </div>
+            <div className="logs-summary-chip">
+              <span className="logs-summary-chip__label">行数</span>
+              <strong className="logs-summary-chip__value">{formatNumber(logsState.summary?.line_count || 0)}</strong>
+            </div>
             <div className="logs-inline-path" title={logsState.summary?.path || "--"}>
               <span className="logs-inline-path__label">文件路径</span>
               <strong className="logs-inline-path__value">{logsState.summary?.path || "--"}</strong>
@@ -3548,6 +3805,23 @@ export default function App() {
   if (activeSection === "settings") sectionContent = renderSettingsSection();
   if (activeSection === "logs") sectionContent = renderLogsSection();
 
+  const currentKnowledgeJob = kbStatus.current_job;
+  const knowledgeJobActive =
+    currentKnowledgeJob && !TERMINAL_JOB_STATUSES.includes(currentKnowledgeJob.status);
+  const knowledgeJobTerminal =
+    currentKnowledgeJob && TERMINAL_JOB_STATUSES.includes(currentKnowledgeJob.status);
+  const knowledgeJobTracked = Boolean(
+    currentKnowledgeJob?.job_id && trackedKnowledgeJobIdsRef.current.has(currentKnowledgeJob.job_id)
+  );
+  const knowledgeJobTone = knowledgeJobActive
+    ? "accent"
+    : currentKnowledgeJob?.status === "completed_with_errors" || currentKnowledgeJob?.status === "failed" || currentKnowledgeJob?.status === "cancelled"
+      ? "warning"
+      : "success";
+  const showKnowledgeJobWindow =
+    currentKnowledgeJob
+    && (!knowledgeJobTerminal || (knowledgeJobTracked && currentKnowledgeJob.job_id !== dismissedKnowledgeJobId));
+
   return (
     <div className="app-shell">
       <div className="ambient-orb ambient-orb--one" />
@@ -3561,35 +3835,35 @@ export default function App() {
                 <div className="hero__brand-mark">
                   <SectionIcon kind="overview" />
                 </div>
-                <div>
-                  <p className="hero__eyebrow">Aurora 控制台</p>
-                  <h1 className="hero__title">软件测试知识工作台</h1>
+                <div className="hero__headline-copy">
+                  <div className="hero__title-row">
+                    <p className="hero__eyebrow">Aurora 控制台</p>
+                    <span className="hero__version-pill">{overview.app_version}</span>
+                  </div>
+                  <h1 className="hero__title" data-testid="hero-title">软件测试知识工作台</h1>
+                  <p className="hero__description">
+                    文档入库、RAG 联调、问答验收与日志排查统一入口。
+                  </p>
                 </div>
               </div>
 
               <div className="hero__toolbelt">
                 <UtilityLauncher
                   icon="overview"
-                  label="说明"
-                  hint="工作台定位"
-                  compact
-                  iconOnly
+                  label="工作台说明"
+                  hint="定位与顺序"
                   onClick={() => setActiveOverlay("about")}
                 />
                 <UtilityLauncher
                   icon="settings"
-                  label="请求头"
-                  hint="临时联调"
-                  compact
-                  iconOnly
+                  label="运行时联调"
+                  hint="临时请求头"
                   onClick={() => setActiveOverlay("runtime")}
                 />
                 <UtilityLauncher
                   icon="chat"
-                  label="起手式"
-                  hint="示例问题"
-                  compact
-                  iconOnly
+                  label="推荐问题"
+                  hint="快速提问"
                   onClick={() => setActiveOverlay("prompts")}
                 />
               </div>
@@ -3603,22 +3877,42 @@ export default function App() {
                 <SectionIcon kind="info" />
                 <span>{demoMode ? "查看演示模式说明" : "查看当前模式说明"}</span>
               </button>
-            </div>
-
-            <div className="hero__summary-rail">
-              {WORKBENCH_SCENARIOS.map((item) => (
-                <span className="hero__summary-chip" key={item}>
-                  {item}
-                </span>
-              ))}
+              <p className="hero__statuscopy">{providerSummary}</p>
+              <div className="hero__summary-rail">
+                {WORKBENCH_SCENARIOS.map((item) => (
+                  <span className="hero__summary-chip" key={item}>
+                    {item}
+                  </span>
+                ))}
+              </div>
             </div>
           </div>
 
           <div className="hero__stats">
-            <div className="mini-stat"><p className="mini-stat__label">版本</p><p className="mini-stat__value">{overview.app_version}</p></div>
-            <div className="mini-stat"><p className="mini-stat__label">知识库状态</p><p className="mini-stat__value">{kbStatus.ready ? "已就绪" : "待重建"}</p></div>
-            <div className="mini-stat"><p className="mini-stat__label">文档数</p><p className="mini-stat__value">{formatNumber(documents.length)}</p></div>
-            <div className="mini-stat"><p className="mini-stat__label">会话数</p><p className="mini-stat__value">{formatNumber(sessions.length)}</p></div>
+            <div className="mini-stat mini-stat--accent">
+              <p className="mini-stat__label">模型接入</p>
+              <p className="mini-stat__value">{modelReadyCount}/2 已就绪</p>
+              <p className="mini-stat__detail">{providerSummary}</p>
+            </div>
+            <div className="mini-stat mini-stat--accent">
+              <p className="mini-stat__label">知识库</p>
+              <p className="mini-stat__value">{kbStatus.ready ? "已就绪" : "待重建"}</p>
+              <p className="mini-stat__detail">
+                {formatNumber(documents.length)} 文档 · {formatNumber(kbStatus.chunk_count)} 切片
+              </p>
+            </div>
+            <div className="mini-stat">
+              <p className="mini-stat__label">待处理</p>
+              <p className="mini-stat__value">{formatNumber(pendingWorkCount)}</p>
+              <p className="mini-stat__detail">
+                Changed {kbStatus.changed_count} / Pending {kbStatus.pending_count} / Failed {kbStatus.failed_count}
+              </p>
+            </div>
+            <div className="mini-stat">
+              <p className="mini-stat__label">当前活跃</p>
+              <p className="mini-stat__value">{formatNumber(sessions.length)} 个会话</p>
+              <p className="mini-stat__detail">{activitySummary}</p>
+            </div>
           </div>
         </header>
 
@@ -3638,6 +3932,7 @@ export default function App() {
                     key={item.id}
                     className={`nav-item ${activeSection === item.id ? "is-active" : ""}`}
                     type="button"
+                    data-testid={`nav-${item.id}`}
                     onClick={() => handleSwitchSection(item.id)}
                   >
                     <span>
@@ -3679,6 +3974,69 @@ export default function App() {
           <main className="content">{sectionContent}</main>
         </div>
       </div>
+
+      {showKnowledgeJobWindow ? (
+        <div className="knowledge-job-window-wrap">
+          <section className={`knowledge-job-window ${knowledgeJobActive ? "is-active" : "is-finished"}`} data-testid="knowledge-job-window">
+            <div className="knowledge-job-window__head">
+              <div className="knowledge-job-window__heading">
+                <p className="panel__kicker">任务</p>
+                <h3 className="knowledge-job-window__title">
+                  {knowledgeJobActive ? "知识库重建中" : "知识库重建已结束"}
+                </h3>
+              </div>
+              <div className="knowledge-job-window__actions">
+                <Badge tone={knowledgeJobTone}>{currentKnowledgeJob.status || "--"}</Badge>
+                {knowledgeJobTerminal ? (
+                  <button
+                    className="ghost-button knowledge-job-window__close"
+                    type="button"
+                    onClick={handleDismissKnowledgeJobWindow}
+                  >
+                    关闭
+                  </button>
+                ) : (
+                  <button
+                    className="ghost-button knowledge-job-window__close"
+                    type="button"
+                    onClick={() => handleSwitchSection("knowledge")}
+                  >
+                    查看
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div className="knowledge-job-window__meta">
+              <div className="knowledge-job-window__meta-item">
+                <span>阶段</span>
+                <strong>{currentKnowledgeJob.stage || "--"}</strong>
+              </div>
+              <div className="knowledge-job-window__meta-item">
+                <span>文档</span>
+                <strong>{formatNumber(currentKnowledgeJob.processed_documents || 0)} / {formatNumber(currentKnowledgeJob.total_documents || 0)}</strong>
+              </div>
+              <div className="knowledge-job-window__meta-item">
+                <span>切片</span>
+                <strong>{formatNumber(currentKnowledgeJob.processed_chunks || 0)} / {formatNumber(currentKnowledgeJob.total_chunks || 0)}</strong>
+              </div>
+            </div>
+
+            <div className="progress-bar">
+              <div className="progress-bar__fill" style={{ width: formatPercent(currentKnowledgeJob.progress || 0) }} />
+            </div>
+
+            <div className="knowledge-job-window__footer">
+              <span className="metric-chip">进度 {formatPercent(currentKnowledgeJob.progress || 0)}</span>
+              {currentKnowledgeJob.started_at ? <span className="metric-chip">开始 {formatDate(currentKnowledgeJob.started_at)}</span> : null}
+              {currentKnowledgeJob.finished_at ? <span className="metric-chip">结束 {formatDate(currentKnowledgeJob.finished_at)}</span> : null}
+            </div>
+
+            <p className="knowledge-job-window__message">{currentKnowledgeJob.message || "等待任务状态更新。"}</p>
+            {currentKnowledgeJob.error ? <p className="notice is-error">{currentKnowledgeJob.error}</p> : null}
+          </section>
+        </div>
+      ) : null}
 
       {renderOverlayWindow()}
     </div>

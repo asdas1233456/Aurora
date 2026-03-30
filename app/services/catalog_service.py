@@ -1,140 +1,102 @@
-"""文档目录与索引状态管理。"""
+"""Document catalog and index status management."""
 
 from __future__ import annotations
 
-from dataclasses import asdict
 from datetime import datetime
 import hashlib
 import json
 from pathlib import Path
 import threading
+import uuid
 
 from app.config import AppConfig
 from app.schemas import DocumentSummary
 from app.services.document_service import get_document_summaries
 from app.services.document_taxonomy import infer_document_category
+from app.services.storage_service import connect_state_db
 
 
 _CATALOG_LOCK = threading.RLock()
-_CATALOG_FILE_NAME = "document_catalog.json"
-
-
-def get_catalog_path(config: AppConfig) -> Path:
-    config.ensure_directories()
-    return config.db_dir / _CATALOG_FILE_NAME
-
-
-def load_catalog_state(config: AppConfig) -> dict[str, dict[str, object]]:
-    catalog_path = get_catalog_path(config)
-    if not catalog_path.exists():
-        return {}
-
-    try:
-        payload = json.loads(catalog_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {}
-
-    raw_documents = payload.get("documents", {})
-    if not isinstance(raw_documents, dict):
-        return {}
-
-    normalized_state: dict[str, dict[str, object]] = {}
-    for path, value in raw_documents.items():
-        if isinstance(value, dict):
-            normalized_state[str(path)] = value
-    return normalized_state
-
-
-def save_catalog_state(config: AppConfig, state: dict[str, dict[str, object]]) -> None:
-    catalog_path = get_catalog_path(config)
-    payload = {
-        "updated_at": _now_text(),
-        "documents": state,
-    }
-    catalog_path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+_LEGACY_CATALOG_FILE_NAME = "document_catalog.json"
+_BOOTSTRAP_METADATA_KEY = "catalog_bootstrapped"
+_LEGACY_IMPORT_METADATA_KEY = "catalog_legacy_imported"
 
 
 def list_document_catalog(config: AppConfig) -> list[DocumentSummary]:
-    summaries, _ = sync_document_catalog(config)
-    return summaries
+    _ensure_catalog_ready(config)
+    with _CATALOG_LOCK, connect_state_db(config) as connection:
+        rows = connection.execute(
+            "SELECT * FROM documents ORDER BY lower(name), document_id"
+        ).fetchall()
+        return [_row_to_document_summary(row) for row in rows]
 
 
-def sync_document_catalog(config: AppConfig) -> tuple[list[DocumentSummary], list[str]]:
-    with _CATALOG_LOCK:
+def sync_document_catalog(
+    config: AppConfig,
+    *,
+    full_scan: bool = True,
+) -> tuple[list[DocumentSummary], list[str]]:
+    with _CATALOG_LOCK, connect_state_db(config) as connection:
+        _migrate_legacy_catalog_if_needed(config, connection)
+        if not full_scan:
+            documents = _list_documents(connection)
+            return documents, []
+
         current_files = get_document_summaries(config.data_dir)
-        existing_state = load_catalog_state(config)
+        existing_by_path = _load_documents_by_path(connection)
         current_paths = {item.path for item in current_files}
         removed_paths = sorted(
-            [path for path in existing_state.keys() if path not in current_paths],
+            [path for path in existing_by_path if path not in current_paths],
             key=str.lower,
         )
 
-        next_state: dict[str, dict[str, object]] = {}
-        documents: list[DocumentSummary] = []
-
+        current_time = _now_text()
         for item in current_files:
-            entry = dict(existing_state.get(item.path, {}))
-            stat_signature = {
-                "size_bytes": item.size_bytes,
-                "updated_at": item.updated_at,
-            }
+            existing = existing_by_path.get(item.path)
+            row = _build_document_row(
+                item=item,
+                existing=existing,
+                current_time=current_time,
+            )
+            _upsert_document_row(connection, row)
 
-            cached_signature = {
-                "size_bytes": entry.get("_stat_size_bytes"),
-                "updated_at": entry.get("_stat_updated_at"),
-            }
-            if stat_signature == cached_signature and entry.get("content_hash"):
-                content_hash = str(entry.get("content_hash", ""))
-            else:
-                content_hash = _compute_file_hash(Path(item.path))
-
-            entry["_stat_size_bytes"] = item.size_bytes
-            entry["_stat_updated_at"] = item.updated_at
-            entry["content_hash"] = content_hash
-            entry["relative_path"] = item.relative_path
-            entry["name"] = item.name
-            entry["theme"] = str(entry.get("theme") or infer_document_category(item.name))
-            entry["tags"] = _normalize_tags(entry.get("tags", []))
-            entry["citation_count"] = int(entry.get("citation_count", 0) or 0)
-            entry["chunk_count"] = int(entry.get("chunk_count", 0) or 0)
-            entry["indexed_hash"] = str(entry.get("indexed_hash", "") or "")
-            entry["last_processed_hash"] = str(entry.get("last_processed_hash", "") or "")
-            entry["last_indexed_at"] = str(entry.get("last_indexed_at", "") or "")
-            entry["last_error"] = str(entry.get("last_error", "") or "")
-            entry["status"] = _resolve_status(
-                content_hash=content_hash,
-                indexed_hash=entry["indexed_hash"],
-                last_processed_hash=entry["last_processed_hash"],
-                last_error=entry["last_error"],
+        if removed_paths:
+            connection.executemany(
+                "DELETE FROM documents WHERE path = ?",
+                [(path,) for path in removed_paths],
             )
 
-            next_state[item.path] = entry
-            documents.append(
-                DocumentSummary(
-                    name=item.name,
-                    path=item.path,
-                    relative_path=item.relative_path,
-                    extension=item.extension,
-                    size_bytes=item.size_bytes,
-                    updated_at=item.updated_at,
-                    status=str(entry["status"]),
-                    theme=str(entry["theme"]),
-                    tags=list(entry["tags"]),
-                    content_hash=content_hash,
-                    indexed_hash=str(entry["indexed_hash"]),
-                    chunk_count=int(entry["chunk_count"]),
-                    citation_count=int(entry["citation_count"]),
-                    last_indexed_at=str(entry["last_indexed_at"]),
-                    last_error=str(entry["last_error"]),
-                )
-            )
+        _set_metadata(connection, _BOOTSTRAP_METADATA_KEY, "1")
+        connection.commit()
+        return _list_documents(connection), removed_paths
 
-        save_catalog_state(config, next_state)
-        documents.sort(key=lambda item: item.name.lower())
-        return documents, removed_paths
+
+def register_documents_in_catalog(
+    config: AppConfig,
+    paths: list[str | Path],
+) -> list[DocumentSummary]:
+    with _CATALOG_LOCK, connect_state_db(config) as connection:
+        _migrate_legacy_catalog_if_needed(config, connection)
+        current_time = _now_text()
+        updated_documents: list[DocumentSummary] = []
+        for raw_path in paths:
+            resolved_path = Path(raw_path).resolve(strict=False)
+            if not resolved_path.exists() or not resolved_path.is_file():
+                continue
+            summary = _make_summary_from_path(resolved_path, config.data_dir)
+            existing = _get_document_row_by_path(connection, summary.path)
+            row = _build_document_row(
+                item=summary,
+                existing=existing,
+                current_time=current_time,
+                force_pending=True,
+            )
+            _upsert_document_row(connection, row)
+            updated_documents.append(_row_to_document_summary(row))
+
+        _set_metadata(connection, _BOOTSTRAP_METADATA_KEY, "1")
+        connection.commit()
+        return updated_documents
 
 
 def update_document_annotations(
@@ -144,42 +106,189 @@ def update_document_annotations(
     theme: str | None = None,
     tags: list[str] | None = None,
 ) -> list[DocumentSummary]:
-    with _CATALOG_LOCK:
-        documents, _ = sync_document_catalog(config)
-        state = load_catalog_state(config)
-
-        for path in paths:
-            entry = state.get(path)
-            if not entry:
-                continue
-            if theme is not None:
-                entry["theme"] = theme.strip() or infer_document_category(Path(path).name)
-            if tags is not None:
-                entry["tags"] = _normalize_tags(tags)
-
-        save_catalog_state(config, state)
+    _ensure_catalog_ready(config)
+    normalized_paths = [str(path or "").strip() for path in paths if str(path or "").strip()]
+    if not normalized_paths:
         return list_document_catalog(config)
+
+    current_time = _now_text()
+    with _CATALOG_LOCK, connect_state_db(config) as connection:
+        for path in normalized_paths:
+            row = _get_document_row_by_path(connection, path)
+            if not row:
+                continue
+
+            next_theme = (
+                theme.strip()
+                if theme is not None and theme.strip()
+                else (row["theme"] or infer_document_category(Path(path).name))
+            )
+            next_tags = (
+                _normalize_tags(tags)
+                if tags is not None
+                else _deserialize_tags(row["tags_json"])
+            )
+            connection.execute(
+                """
+                UPDATE documents
+                SET theme = ?,
+                    tags_json = ?,
+                    indexed_hash = '',
+                    last_processed_hash = '',
+                    chunk_count = 0,
+                    last_indexed_at = '',
+                    last_error = '',
+                    status = 'pending',
+                    updated_row_at = ?
+                WHERE path = ?
+                """,
+                (next_theme, json.dumps(next_tags, ensure_ascii=False), current_time, path),
+            )
+
+        connection.commit()
+        return _list_documents(connection)
+
+
+def get_document_by_id(config: AppConfig, document_id: str) -> DocumentSummary | None:
+    _ensure_catalog_ready(config)
+    normalized_document_id = str(document_id or "").strip()
+    if not normalized_document_id:
+        return None
+
+    with _CATALOG_LOCK, connect_state_db(config) as connection:
+        row = connection.execute(
+            "SELECT * FROM documents WHERE document_id = ?",
+            (normalized_document_id,),
+        ).fetchone()
+        return _row_to_document_summary(row) if row else None
+
+
+def get_documents_by_ids(
+    config: AppConfig,
+    document_ids: list[str],
+) -> tuple[list[DocumentSummary], list[str]]:
+    _ensure_catalog_ready(config)
+    normalized_ids = [str(item or "").strip() for item in document_ids if str(item or "").strip()]
+    if not normalized_ids:
+        return [], []
+
+    placeholders = ", ".join("?" for _ in normalized_ids)
+    with _CATALOG_LOCK, connect_state_db(config) as connection:
+        rows = connection.execute(
+            f"SELECT * FROM documents WHERE document_id IN ({placeholders})",
+            normalized_ids,
+        ).fetchall()
+        documents_by_id = {
+            row["document_id"]: _row_to_document_summary(row)
+            for row in rows
+        }
+
+    documents: list[DocumentSummary] = []
+    missing_ids: list[str] = []
+    for document_id in normalized_ids:
+        document = documents_by_id.get(document_id)
+        if not document:
+            missing_ids.append(document_id)
+            continue
+        documents.append(document)
+    return documents, missing_ids
+
+
+def remove_documents_from_catalog(config: AppConfig, document_ids: list[str]) -> list[str]:
+    _ensure_catalog_ready(config)
+    normalized_ids = {str(item or "").strip() for item in document_ids if str(item or "").strip()}
+    if not normalized_ids:
+        return []
+
+    placeholders = ", ".join("?" for _ in normalized_ids)
+    with _CATALOG_LOCK, connect_state_db(config) as connection:
+        rows = connection.execute(
+            f"SELECT path FROM documents WHERE document_id IN ({placeholders})",
+            list(normalized_ids),
+        ).fetchall()
+        removed_paths = [str(row["path"]) for row in rows]
+        connection.execute(
+            f"DELETE FROM documents WHERE document_id IN ({placeholders})",
+            list(normalized_ids),
+        )
+        connection.commit()
+        return removed_paths
+
+
+def rename_document_in_catalog(
+    config: AppConfig,
+    *,
+    document_id: str,
+    old_path: str,
+    new_path: str,
+) -> None:
+    _ensure_catalog_ready(config)
+    normalized_document_id = str(document_id or "").strip()
+    if not normalized_document_id:
+        return
+
+    new_file_path = Path(new_path).resolve(strict=False)
+    if not new_file_path.exists() or not new_file_path.is_file():
+        return
+
+    current_time = _now_text()
+    with _CATALOG_LOCK, connect_state_db(config) as connection:
+        row = connection.execute(
+            "SELECT * FROM documents WHERE document_id = ? OR path = ?",
+            (normalized_document_id, old_path),
+        ).fetchone()
+        if not row:
+            return
+
+        summary = _make_summary_from_path(new_file_path, config.data_dir)
+        updated_row = _build_document_row(
+            item=summary,
+            existing=row,
+            current_time=current_time,
+            force_pending=True,
+            document_id=normalized_document_id,
+        )
+        connection.execute("DELETE FROM documents WHERE document_id = ?", (normalized_document_id,))
+        _upsert_document_row(connection, updated_row)
+        connection.commit()
 
 
 def mark_documents_indexed(
     config: AppConfig,
     indexed_payloads: dict[str, dict[str, object]],
 ) -> None:
-    with _CATALOG_LOCK:
-        state = load_catalog_state(config)
-        current_time = _now_text()
+    if not indexed_payloads:
+        return
+
+    current_time = _now_text()
+    with _CATALOG_LOCK, connect_state_db(config) as connection:
         for path, payload in indexed_payloads.items():
-            entry = state.get(path)
-            if not entry:
+            row = _get_document_row_by_path(connection, path)
+            if not row:
                 continue
-            content_hash = str(payload.get("content_hash") or entry.get("content_hash", ""))
-            entry["indexed_hash"] = content_hash
-            entry["last_processed_hash"] = content_hash
-            entry["chunk_count"] = int(payload.get("chunk_count", 0) or 0)
-            entry["last_indexed_at"] = current_time
-            entry["last_error"] = ""
-            entry["status"] = "indexed"
-        save_catalog_state(config, state)
+            content_hash = str(payload.get("content_hash") or row["content_hash"] or "")
+            connection.execute(
+                """
+                UPDATE documents
+                SET indexed_hash = ?,
+                    last_processed_hash = ?,
+                    chunk_count = ?,
+                    last_indexed_at = ?,
+                    last_error = '',
+                    status = 'indexed',
+                    updated_row_at = ?
+                WHERE path = ?
+                """,
+                (
+                    content_hash,
+                    content_hash,
+                    int(payload.get("chunk_count", 0) or 0),
+                    current_time,
+                    current_time,
+                    path,
+                ),
+            )
+        connection.commit()
 
 
 def mark_document_failed(
@@ -189,68 +298,407 @@ def mark_document_failed(
     error: str,
     content_hash: str = "",
 ) -> None:
-    with _CATALOG_LOCK:
-        state = load_catalog_state(config)
-        entry = state.get(path)
-        if not entry:
+    with _CATALOG_LOCK, connect_state_db(config) as connection:
+        row = _get_document_row_by_path(connection, path)
+        if not row:
             return
-        current_hash = content_hash.strip() or str(entry.get("content_hash", "") or "")
-        entry["last_processed_hash"] = current_hash
-        entry["last_error"] = error.strip()
-        entry["status"] = _resolve_status(
+
+        current_hash = content_hash.strip() or str(row["content_hash"] or "")
+        last_error = error.strip()
+        status = _resolve_status(
             content_hash=current_hash,
-            indexed_hash=str(entry.get("indexed_hash", "") or ""),
+            indexed_hash=str(row["indexed_hash"] or ""),
             last_processed_hash=current_hash,
-            last_error=entry["last_error"],
+            last_error=last_error,
         )
-        save_catalog_state(config, state)
+        connection.execute(
+            """
+            UPDATE documents
+            SET last_processed_hash = ?,
+                last_error = ?,
+                status = ?,
+                updated_row_at = ?
+            WHERE path = ?
+            """,
+            (current_hash, last_error, status, _now_text(), path),
+        )
+        connection.commit()
 
 
 def bump_citation_counts(config: AppConfig, source_paths: list[str]) -> None:
-    if not source_paths:
+    normalized_paths = [str(path or "").strip() for path in source_paths if str(path or "").strip()]
+    if not normalized_paths:
         return
 
-    with _CATALOG_LOCK:
-        state = load_catalog_state(config)
-        for path in source_paths:
-            entry = state.get(path)
-            if not entry:
-                continue
-            entry["citation_count"] = int(entry.get("citation_count", 0) or 0) + 1
-        save_catalog_state(config, state)
+    with _CATALOG_LOCK, connect_state_db(config) as connection:
+        for path in normalized_paths:
+            connection.execute(
+                """
+                UPDATE documents
+                SET citation_count = citation_count + 1,
+                    updated_row_at = ?
+                WHERE path = ?
+                """,
+                (_now_text(), path),
+            )
+        connection.commit()
 
 
 def reset_document_tracking(config: AppConfig, paths: list[str]) -> None:
-    if not paths:
+    normalized_paths = [str(path or "").strip() for path in paths if str(path or "").strip()]
+    if not normalized_paths:
         return
 
-    with _CATALOG_LOCK:
-        state = load_catalog_state(config)
-        for path in paths:
-            entry = state.get(path)
-            if not entry:
-                continue
-            entry["indexed_hash"] = ""
-            entry["last_processed_hash"] = ""
-            entry["chunk_count"] = 0
-            entry["last_indexed_at"] = ""
-            entry["last_error"] = ""
-            entry["status"] = "pending"
-        save_catalog_state(config, state)
+    current_time = _now_text()
+    with _CATALOG_LOCK, connect_state_db(config) as connection:
+        for path in normalized_paths:
+            connection.execute(
+                """
+                UPDATE documents
+                SET indexed_hash = '',
+                    last_processed_hash = '',
+                    chunk_count = 0,
+                    last_indexed_at = '',
+                    last_error = '',
+                    status = 'pending',
+                    updated_row_at = ?
+                WHERE path = ?
+                """,
+                (current_time, path),
+            )
+        connection.commit()
+
+
+def reset_all_document_tracking(config: AppConfig) -> None:
+    with _CATALOG_LOCK, connect_state_db(config) as connection:
+        connection.execute(
+            """
+            UPDATE documents
+            SET indexed_hash = '',
+                last_processed_hash = '',
+                chunk_count = 0,
+                last_indexed_at = '',
+                last_error = '',
+                status = 'pending',
+                updated_row_at = ?
+            """,
+            (_now_text(),),
+        )
+        connection.commit()
 
 
 def get_document_status_counts(config: AppConfig) -> dict[str, int]:
-    documents = list_document_catalog(config)
+    _ensure_catalog_ready(config)
     counts = {
         "indexed": 0,
         "changed": 0,
         "pending": 0,
         "failed": 0,
-        "total": len(documents),
+        "total": 0,
     }
-    for document in documents:
-        counts[document.status] = counts.get(document.status, 0) + 1
+    with _CATALOG_LOCK, connect_state_db(config) as connection:
+        rows = connection.execute(
+            "SELECT status, COUNT(*) AS count FROM documents GROUP BY status"
+        ).fetchall()
+        total_row = connection.execute("SELECT COUNT(*) AS count FROM documents").fetchone()
+        for row in rows:
+            counts[str(row["status"] or "")] = int(row["count"] or 0)
+        counts["total"] = int(total_row["count"] or 0) if total_row else 0
     return counts
+
+
+def list_documents_needing_index(config: AppConfig) -> list[DocumentSummary]:
+    _ensure_catalog_ready(config)
+    with _CATALOG_LOCK, connect_state_db(config) as connection:
+        rows = connection.execute(
+            """
+            SELECT * FROM documents
+            WHERE status IN ('pending', 'changed', 'failed')
+            ORDER BY lower(name), document_id
+            """
+        ).fetchall()
+        return [_row_to_document_summary(row) for row in rows]
+
+
+def _ensure_catalog_ready(config: AppConfig) -> None:
+    should_bootstrap = False
+    with _CATALOG_LOCK, connect_state_db(config) as connection:
+        _migrate_legacy_catalog_if_needed(config, connection)
+        bootstrapped = _get_metadata(connection, _BOOTSTRAP_METADATA_KEY)
+        if bootstrapped != "1":
+            should_bootstrap = True
+
+    if should_bootstrap:
+        sync_document_catalog(config, full_scan=True)
+
+
+def _migrate_legacy_catalog_if_needed(config: AppConfig, connection) -> None:
+    if _get_metadata(connection, _LEGACY_IMPORT_METADATA_KEY) == "1":
+        return
+
+    legacy_path = config.db_dir / _LEGACY_CATALOG_FILE_NAME
+    if legacy_path.exists():
+        try:
+            payload = json.loads(legacy_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            payload = {}
+
+        raw_documents = payload.get("documents", {})
+        current_time = _now_text()
+        if isinstance(raw_documents, dict):
+            for path, value in raw_documents.items():
+                if not isinstance(value, dict):
+                    continue
+                file_path = Path(str(path)).resolve(strict=False)
+                row = {
+                    "document_id": str(value.get("document_id") or uuid.uuid4().hex),
+                    "path": str(file_path),
+                    "relative_path": str(value.get("relative_path") or file_path.name),
+                    "name": str(value.get("name") or file_path.name),
+                    "extension": file_path.suffix.lower().lstrip("."),
+                    "size_bytes": int(value.get("_stat_size_bytes", 0) or 0),
+                    "updated_at": str(value.get("_stat_updated_at", "") or ""),
+                    "stat_size_bytes": int(value.get("_stat_size_bytes", 0) or 0),
+                    "stat_updated_at": str(value.get("_stat_updated_at", "") or ""),
+                    "content_hash": str(value.get("content_hash", "") or ""),
+                    "indexed_hash": str(value.get("indexed_hash", "") or ""),
+                    "last_processed_hash": str(value.get("last_processed_hash", "") or ""),
+                    "theme": str(value.get("theme") or infer_document_category(file_path.name)),
+                    "tags_json": json.dumps(
+                        _normalize_tags(value.get("tags", [])),
+                        ensure_ascii=False,
+                    ),
+                    "citation_count": int(value.get("citation_count", 0) or 0),
+                    "chunk_count": int(value.get("chunk_count", 0) or 0),
+                    "last_indexed_at": str(value.get("last_indexed_at", "") or ""),
+                    "last_error": str(value.get("last_error", "") or ""),
+                    "status": str(value.get("status", "pending") or "pending"),
+                    "created_at": current_time,
+                    "updated_row_at": current_time,
+                }
+                _upsert_document_row(connection, row)
+
+    _set_metadata(connection, _LEGACY_IMPORT_METADATA_KEY, "1")
+    connection.commit()
+
+
+def _list_documents(connection) -> list[DocumentSummary]:
+    rows = connection.execute(
+        "SELECT * FROM documents ORDER BY lower(name), document_id"
+    ).fetchall()
+    return [_row_to_document_summary(row) for row in rows]
+
+
+def _load_documents_by_path(connection) -> dict[str, object]:
+    rows = connection.execute("SELECT * FROM documents").fetchall()
+    return {str(row["path"]): row for row in rows}
+
+
+def _get_document_row_by_path(connection, path: str):
+    return connection.execute(
+        "SELECT * FROM documents WHERE path = ?",
+        (path,),
+    ).fetchone()
+
+
+def _build_document_row(
+    *,
+    item: DocumentSummary,
+    existing,
+    current_time: str,
+    force_pending: bool = False,
+    document_id: str = "",
+) -> dict[str, object]:
+    if existing and item.size_bytes == int(existing["stat_size_bytes"] or 0) and item.updated_at == str(
+        existing["stat_updated_at"] or ""
+    ) and str(existing["content_hash"] or ""):
+        content_hash = str(existing["content_hash"] or "")
+    else:
+        content_hash = _compute_file_hash(Path(item.path))
+
+    effective_document_id = document_id or (
+        str(existing["document_id"]) if existing and str(existing["document_id"]) else uuid.uuid4().hex
+    )
+    theme = (
+        str(existing["theme"])
+        if existing and str(existing["theme"] or "").strip()
+        else infer_document_category(item.name)
+    )
+    tags = _deserialize_tags(existing["tags_json"]) if existing else []
+    citation_count = int(existing["citation_count"] or 0) if existing else 0
+    indexed_hash = "" if force_pending else (str(existing["indexed_hash"] or "") if existing else "")
+    last_processed_hash = (
+        "" if force_pending else (str(existing["last_processed_hash"] or "") if existing else "")
+    )
+    chunk_count = 0 if force_pending else (int(existing["chunk_count"] or 0) if existing else 0)
+    last_indexed_at = "" if force_pending else (str(existing["last_indexed_at"] or "") if existing else "")
+    last_error = "" if force_pending else (str(existing["last_error"] or "") if existing else "")
+    status = (
+        "pending"
+        if force_pending
+        else _resolve_status(
+            content_hash=content_hash,
+            indexed_hash=indexed_hash,
+            last_processed_hash=last_processed_hash,
+            last_error=last_error,
+        )
+    )
+
+    return {
+        "document_id": effective_document_id,
+        "path": item.path,
+        "relative_path": item.relative_path,
+        "name": item.name,
+        "extension": item.extension,
+        "size_bytes": item.size_bytes,
+        "updated_at": item.updated_at,
+        "stat_size_bytes": item.size_bytes,
+        "stat_updated_at": item.updated_at,
+        "content_hash": content_hash,
+        "indexed_hash": indexed_hash,
+        "last_processed_hash": last_processed_hash,
+        "theme": theme,
+        "tags_json": json.dumps(tags, ensure_ascii=False),
+        "citation_count": citation_count,
+        "chunk_count": chunk_count,
+        "last_indexed_at": last_indexed_at,
+        "last_error": last_error,
+        "status": status,
+        "created_at": str(existing["created_at"] or current_time) if existing else current_time,
+        "updated_row_at": current_time,
+    }
+
+
+def _upsert_document_row(connection, row: dict[str, object]) -> None:
+    connection.execute(
+        """
+        INSERT INTO documents (
+            document_id,
+            path,
+            relative_path,
+            name,
+            extension,
+            size_bytes,
+            updated_at,
+            stat_size_bytes,
+            stat_updated_at,
+            content_hash,
+            indexed_hash,
+            last_processed_hash,
+            theme,
+            tags_json,
+            citation_count,
+            chunk_count,
+            last_indexed_at,
+            last_error,
+            status,
+            created_at,
+            updated_row_at
+        )
+        VALUES (
+            :document_id,
+            :path,
+            :relative_path,
+            :name,
+            :extension,
+            :size_bytes,
+            :updated_at,
+            :stat_size_bytes,
+            :stat_updated_at,
+            :content_hash,
+            :indexed_hash,
+            :last_processed_hash,
+            :theme,
+            :tags_json,
+            :citation_count,
+            :chunk_count,
+            :last_indexed_at,
+            :last_error,
+            :status,
+            :created_at,
+            :updated_row_at
+        )
+        ON CONFLICT(document_id) DO UPDATE SET
+            path = excluded.path,
+            relative_path = excluded.relative_path,
+            name = excluded.name,
+            extension = excluded.extension,
+            size_bytes = excluded.size_bytes,
+            updated_at = excluded.updated_at,
+            stat_size_bytes = excluded.stat_size_bytes,
+            stat_updated_at = excluded.stat_updated_at,
+            content_hash = excluded.content_hash,
+            indexed_hash = excluded.indexed_hash,
+            last_processed_hash = excluded.last_processed_hash,
+            theme = excluded.theme,
+            tags_json = excluded.tags_json,
+            citation_count = excluded.citation_count,
+            chunk_count = excluded.chunk_count,
+            last_indexed_at = excluded.last_indexed_at,
+            last_error = excluded.last_error,
+            status = excluded.status,
+            updated_row_at = excluded.updated_row_at
+        """,
+        row,
+    )
+
+
+def _make_summary_from_path(file_path: Path, data_dir: Path) -> DocumentSummary:
+    resolved_path = file_path.resolve(strict=False)
+    stat_result = resolved_path.stat()
+    resolved_data_dir = data_dir.resolve(strict=False)
+    try:
+        relative_path = resolved_path.relative_to(resolved_data_dir).as_posix()
+    except ValueError:
+        relative_path = resolved_path.name
+
+    return DocumentSummary(
+        document_id="",
+        name=resolved_path.name,
+        path=str(resolved_path),
+        relative_path=relative_path,
+        extension=resolved_path.suffix.lower().lstrip("."),
+        size_bytes=stat_result.st_size,
+        updated_at=datetime.fromtimestamp(stat_result.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+        status="pending",
+        theme="",
+        tags=[],
+    )
+
+
+def _row_to_document_summary(row) -> DocumentSummary:
+    return DocumentSummary(
+        document_id=str(row["document_id"] or ""),
+        name=str(row["name"] or ""),
+        path=str(row["path"] or ""),
+        relative_path=str(row["relative_path"] or ""),
+        extension=str(row["extension"] or ""),
+        size_bytes=int(row["size_bytes"] or 0),
+        updated_at=str(row["updated_at"] or ""),
+        status=str(row["status"] or "pending"),
+        theme=str(row["theme"] or ""),
+        tags=_deserialize_tags(row["tags_json"]),
+        content_hash=str(row["content_hash"] or ""),
+        indexed_hash=str(row["indexed_hash"] or ""),
+        chunk_count=int(row["chunk_count"] or 0),
+        citation_count=int(row["citation_count"] or 0),
+        last_indexed_at=str(row["last_indexed_at"] or ""),
+        last_error=str(row["last_error"] or ""),
+    )
+
+
+def _deserialize_tags(raw_tags: object) -> list[str]:
+    if isinstance(raw_tags, str):
+        try:
+            payload = json.loads(raw_tags)
+        except json.JSONDecodeError:
+            return _normalize_tags(raw_tags.split(","))
+        if isinstance(payload, list):
+            return _normalize_tags(payload)
+        return []
+    if isinstance(raw_tags, list):
+        return _normalize_tags(raw_tags)
+    return []
 
 
 def _compute_file_hash(file_path: Path) -> str:
@@ -294,6 +742,25 @@ def _resolve_status(
     if not indexed_hash:
         return "pending"
     return "changed"
+
+
+def _get_metadata(connection, key: str) -> str:
+    row = connection.execute(
+        "SELECT value FROM metadata WHERE key = ?",
+        (key,),
+    ).fetchone()
+    return str(row["value"] or "") if row else ""
+
+
+def _set_metadata(connection, key: str, value: str) -> None:
+    connection.execute(
+        """
+        INSERT INTO metadata (key, value)
+        VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """,
+        (key, value),
+    )
 
 
 def _now_text() -> str:

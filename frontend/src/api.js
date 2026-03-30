@@ -117,6 +117,10 @@ export function getOverview(runtimeConfig, signal) {
   return request("/system/overview", { runtimeConfig, signal });
 }
 
+export function getWorkspaceBootstrap(runtimeConfig, signal) {
+  return request("/system/bootstrap", { runtimeConfig, signal });
+}
+
 export function getKnowledgeStatus(runtimeConfig, signal) {
   return request("/knowledge-base/status", { runtimeConfig, signal });
 }
@@ -125,8 +129,8 @@ export function getDocuments(signal) {
   return request("/documents", { signal });
 }
 
-export function getDocumentPreview(path, signal) {
-  return request(`/documents/preview${makeSearchParams({ path })}`, { signal });
+export function getDocumentPreview(documentId, signal) {
+  return request(`/documents/preview${makeSearchParams({ document_id: documentId })}`, { signal });
 }
 
 export function uploadDocumentFiles(files, signal) {
@@ -142,38 +146,55 @@ export function uploadDocumentFiles(files, signal) {
   });
 }
 
-export function renameDocument(path, newName, signal) {
+export function renameDocument(documentId, newName, signal) {
   return request("/documents/rename", {
     method: "PUT",
     body: {
-      path,
+      document_id: documentId,
       new_name: newName,
     },
     signal,
   });
 }
 
-export function updateDocumentMetadata(paths, updates = {}, signal) {
+export function updateDocumentMetadata(documentIds, updates = {}, signal) {
   return request("/documents/metadata", {
     method: "PATCH",
     body: {
-      paths,
+      document_ids: documentIds,
       ...updates,
     },
     signal,
   });
 }
 
-export function removeDocuments(paths, signal) {
+export function removeDocuments(documentIds, signal) {
   return request("/documents", {
     method: "DELETE",
-    body: { paths },
+    body: { document_ids: documentIds },
     signal,
   });
 }
 
-export function rebuildKnowledgeBase(runtimeConfig, signal) {
+export function rebuildKnowledgeBase(runtimeConfig, signal, mode = "sync") {
   return request("/knowledge-base/rebuild", {
+    method: "POST",
+    body: { mode },
+    runtimeConfig,
+    signal,
+  });
+}
+
+export function scanKnowledgeBase(runtimeConfig, signal) {
+  return request("/knowledge-base/scan", {
+    method: "POST",
+    runtimeConfig,
+    signal,
+  });
+}
+
+export function resetKnowledgeBase(runtimeConfig, signal) {
+  return request("/knowledge-base/reset", {
     method: "POST",
     runtimeConfig,
     signal,

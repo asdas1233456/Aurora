@@ -61,4 +61,4 @@ Write-Host "Open: http://127.0.0.1:$Port"
 Write-Host ""
 
 $env:API_PORT = "$Port"
-.\.venv\Scripts\python.exe api_server.py
+.\.venv\Scripts\python.exe -m uvicorn app.server:app --host 127.0.0.1 --port $Port

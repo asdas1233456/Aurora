@@ -16,6 +16,14 @@ ROOT_NODE_ID = "aurora-root"
 def build_knowledge_graph(config: AppConfig) -> KnowledgeGraph:
     """根据当前文档资产生成一个轻量知识图谱。"""
     documents = list_document_catalog(config)
+    return build_knowledge_graph_from_documents(config, documents)
+
+
+def build_knowledge_graph_from_documents(
+    config: AppConfig,
+    documents: list[object],
+) -> KnowledgeGraph:
+    """Build the lightweight graph from a preloaded document list."""
     nodes: list[KnowledgeGraphNode] = [
         KnowledgeGraphNode(
             id=ROOT_NODE_ID,
@@ -90,7 +98,7 @@ def build_knowledge_graph(config: AppConfig) -> KnowledgeGraph:
     for document in documents:
         category = document.theme or infer_document_category(document.name)
         file_type = document.extension.upper()
-        node_id = f"document:{_slugify(document.path)}"
+        node_id = f"document:{document.document_id or _slugify(document.path)}"
         nodes.append(
             KnowledgeGraphNode(
                 id=node_id,
@@ -98,7 +106,8 @@ def build_knowledge_graph(config: AppConfig) -> KnowledgeGraph:
                 node_type="document",
                 size=10 + min(12, max(1, int(document.size_bytes / 1024 / 8))),
                 meta={
-                    "path": document.path,
+                    "document_id": document.document_id,
+                    "relative_path": document.relative_path,
                     "updated_at": document.updated_at,
                     "extension": document.extension,
                     "size_bytes": document.size_bytes,
@@ -135,5 +144,7 @@ def build_knowledge_graph(config: AppConfig) -> KnowledgeGraph:
             "edge_count": len(edges),
         },
     )
+
+
 def _slugify(value: str) -> str:
     return "".join(char.lower() if char.isalnum() else "-" for char in value).strip("-")

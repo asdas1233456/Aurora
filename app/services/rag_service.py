@@ -38,8 +38,10 @@ def build_citations(retrieved_chunks: list[RetrievedChunk]) -> list[Citation]:
     for chunk in retrieved_chunks:
         citations.append(
             Citation(
+                document_id=chunk.document_id,
                 file_name=chunk.file_name,
                 source_path=chunk.source_path,
+                relative_path=chunk.relative_path,
                 snippet=_make_snippet(chunk.text),
                 full_text=_make_full_text(chunk.text),
                 score=chunk.score,
