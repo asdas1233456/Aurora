@@ -22,6 +22,7 @@ from app.schemas import (
     MemoryRequestContext,
     RetrievedChunk,
 )
+from app.services.capabilities import CapabilityAssembler, CapabilityContext
 from app.services.degradation_controller import DegradationController
 from app.services.observability_service import ObservabilityService
 from app.services.capability_guard import (
@@ -33,7 +34,6 @@ from app.services.capability_guard import (
     infer_scene,
 )
 from app.services.catalog_service import bump_citation_counts
-from app.services.retrieval_service import retrieve_chunks
 
 
 logger = logging.getLogger(__name__)
@@ -68,6 +68,8 @@ def build_citations(retrieved_chunks: list[RetrievedChunk]) -> list[Citation]:
             lexical_score=chunk.lexical_score,
             theme=chunk.theme,
             tags=chunk.tags,
+            chunk_id=chunk.chunk_id,
+            page_number=chunk.page_number,
         )
         for index, chunk in enumerate(retrieved_chunks, start=1)
     ]
@@ -96,11 +98,13 @@ def answer_with_rag(
     )
 
     retrieval_started_at = started_at
-    retrieved_chunks, retrieval_query, rewritten_question = retrieve_chunks(
+    retrieved_chunks, retrieval_query, rewritten_question = _retrieve_chunks_with_capability(
         question=question,
         config=config,
         top_k=top_k,
         chat_history=chat_history,
+        scene=resolved_scene,
+        request_context=request_context,
     )
     retrieval_ms = (time.perf_counter() - retrieval_started_at) * 1000
 
@@ -318,6 +322,41 @@ def top_k_or_default(config: AppConfig, requested_top_k: int | None) -> int:
     return requested_top_k or config.default_top_k
 
 
+def _retrieve_chunks_with_capability(
+    *,
+    question: str,
+    config: AppConfig,
+    top_k: int | None,
+    chat_history: list[dict[str, object]],
+    scene: str,
+    request_context: MemoryRequestContext | None,
+) -> tuple[list[RetrievedChunk], str, str]:
+    """Resolve retrieval through the capability layer.
+
+    Phase 1 intentionally keeps the underlying retrieval implementation intact.
+    The new layer only standardizes how orchestration code discovers and invokes
+    that capability, which avoids duplicating retrieval logic across services.
+    """
+
+    capability_context = CapabilityContext.from_request_context(
+        request_context,
+        scene=scene,
+        invocation_source="system",
+        metadata={"question": question},
+    )
+    assembly = CapabilityAssembler(config).assemble(capability_context)
+    retrieval_tool = assembly.tools["kb.retrieve"]
+    return retrieval_tool.execute(
+        {
+            "question": question,
+            "top_k": top_k,
+            "chat_history": chat_history,
+            "access_filter": assembly.access_filter,
+        },
+        capability_context,
+    )
+
+
 def _build_conversation_context(
     chat_history: list[dict[str, object]],
     max_turns: int,
@@ -373,6 +412,8 @@ def _build_knowledge_context(retrieved_chunks: list[RetrievedChunk]) -> list[Kno
                 score=chunk.score,
                 theme=chunk.theme,
                 tags=list(chunk.tags),
+                chunk_id=chunk.chunk_id,
+                page_number=chunk.page_number,
             )
         )
     return context_items

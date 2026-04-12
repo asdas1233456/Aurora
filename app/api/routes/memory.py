@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from app.api.dependencies import get_runtime_config
+from app.api.dependencies import get_runtime_config, require_internal_admin
 from app.api.internal_utils import (
     build_internal_request_context,
     ensure_internal_api,
@@ -25,6 +25,7 @@ from app.api.serializers import (
     serialize_security_event_record,
     serialize_scope_ref,
 )
+from app.auth import AuthenticatedUser
 from app.config import AppConfig
 from app.services.abuse_guard import RateLimitExceededError
 from app.services.audit_service import AuditService
@@ -47,11 +48,13 @@ def create_memory_fact(
     request: Request,
     payload: MemoryManualWriteModel,
     runtime_config: AppConfig = Depends(get_runtime_config),
+    user: AuthenticatedUser = Depends(require_internal_admin),
 ):
     ensure_internal_api(request)
     request_context = build_internal_request_context(
         request,
         runtime_config,
+        user,
         tenant_id=payload.tenant_id,
         user_id=payload.user_id,
         project_id=payload.project_id,
@@ -120,11 +123,13 @@ def list_memory_facts(
     global_scope_id: str | None = None,
     limit: int = Query(default=5, ge=1, le=20),
     runtime_config: AppConfig = Depends(get_runtime_config),
+    user: AuthenticatedUser = Depends(require_internal_admin),
 ):
     ensure_internal_api(request)
     request_context = build_internal_request_context(
         request,
         runtime_config,
+        user,
         tenant_id=tenant_id,
         user_id=user_id,
         project_id=project_id,
@@ -149,11 +154,13 @@ def preview_memory_retrieval(
     request: Request,
     payload: MemoryRetrievalPreviewModel,
     runtime_config: AppConfig = Depends(get_runtime_config),
+    user: AuthenticatedUser = Depends(require_internal_admin),
 ):
     ensure_internal_api(request)
     request_context = build_internal_request_context(
         request,
         runtime_config,
+        user,
         tenant_id=payload.tenant_id,
         user_id=payload.user_id,
         project_id=payload.project_id,
@@ -194,11 +201,13 @@ def get_memory_fact(
     team_id: str | None = None,
     global_scope_id: str | None = None,
     runtime_config: AppConfig = Depends(get_runtime_config),
+    user: AuthenticatedUser = Depends(require_internal_admin),
 ):
     ensure_internal_api(request)
     request_context = build_internal_request_context(
         request,
         runtime_config,
+        user,
         tenant_id=tenant_id,
         user_id=user_id,
         project_id=project_id,
@@ -226,11 +235,13 @@ def get_memory_fact_history(
     global_scope_id: str | None = None,
     limit: int = Query(default=20, ge=1, le=100),
     runtime_config: AppConfig = Depends(get_runtime_config),
+    user: AuthenticatedUser = Depends(require_internal_admin),
 ):
     ensure_internal_api(request)
     request_context = build_internal_request_context(
         request,
         runtime_config,
+        user,
         tenant_id=tenant_id,
         user_id=user_id,
         project_id=project_id,
@@ -263,11 +274,13 @@ def update_memory_fact_status(
     payload: MemoryStatusUpdateModel,
     request: Request,
     runtime_config: AppConfig = Depends(get_runtime_config),
+    user: AuthenticatedUser = Depends(require_internal_admin),
 ):
     ensure_internal_api(request)
     request_context = build_internal_request_context(
         request,
         runtime_config,
+        user,
         tenant_id=payload.tenant_id,
         user_id=payload.user_id,
         project_id=payload.project_id,
@@ -299,11 +312,13 @@ def list_memory_audit_by_request(
     request: Request,
     tenant_id: str | None = None,
     runtime_config: AppConfig = Depends(get_runtime_config),
+    user: AuthenticatedUser = Depends(require_internal_admin),
 ):
     ensure_internal_api(request)
     request_context = build_internal_request_context(
         request,
         runtime_config,
+        user,
         tenant_id=tenant_id,
         request_id=request_id,
     )
@@ -323,11 +338,13 @@ def list_memory_retention_audit(
     tenant_id: str | None = None,
     request_id: str | None = None,
     runtime_config: AppConfig = Depends(get_runtime_config),
+    user: AuthenticatedUser = Depends(require_internal_admin),
 ):
     ensure_internal_api(request)
     request_context = build_internal_request_context(
         request,
         runtime_config,
+        user,
         tenant_id=tenant_id,
         request_id=request_id,
     )
@@ -351,11 +368,13 @@ def get_governance_summary(
     limit: int = Query(default=10, ge=1, le=50),
     capture_snapshot: bool = False,
     runtime_config: AppConfig = Depends(get_runtime_config),
+    user: AuthenticatedUser = Depends(require_internal_admin),
 ):
     ensure_internal_api(request)
     request_context = build_internal_request_context(
         request,
         runtime_config,
+        user,
         tenant_id=tenant_id,
         request_id=request_id,
     )
@@ -378,11 +397,13 @@ def list_security_events(
     limit: int = Query(default=20, ge=1, le=100),
     status: str | None = None,
     runtime_config: AppConfig = Depends(get_runtime_config),
+    user: AuthenticatedUser = Depends(require_internal_admin),
 ):
     ensure_internal_api(request)
     request_context = build_internal_request_context(
         request,
         runtime_config,
+        user,
         tenant_id=tenant_id,
         request_id=request_id,
     )
@@ -405,6 +426,7 @@ def list_policy_decisions(
     decision: str | None = None,
     limit: int = Query(default=20, ge=1, le=100),
     runtime_config: AppConfig = Depends(get_runtime_config),
+    _user: AuthenticatedUser = Depends(require_internal_admin),
 ):
     ensure_internal_api(request)
     items = AuditService(runtime_config).list_policy_decisions(
@@ -425,6 +447,7 @@ def list_metric_snapshots(
     metric_name: str | None = None,
     limit: int = Query(default=20, ge=1, le=100),
     runtime_config: AppConfig = Depends(get_runtime_config),
+    _user: AuthenticatedUser = Depends(require_internal_admin),
 ):
     ensure_internal_api(request)
     items = ObservabilityService(runtime_config).list_metric_snapshots(
@@ -443,11 +466,13 @@ def run_memory_lifecycle_maintenance(
     request: Request,
     payload: MemoryLifecycleMaintenanceModel,
     runtime_config: AppConfig = Depends(get_runtime_config),
+    user: AuthenticatedUser = Depends(require_internal_admin),
 ):
     ensure_internal_api(request)
     request_context = build_internal_request_context(
         request,
         runtime_config,
+        user,
         tenant_id=payload.tenant_id,
         request_id=payload.request_id,
     )

@@ -11,6 +11,7 @@ from typing import Any
 from llama_index.core.schema import BaseNode
 
 from app.config import AppConfig
+from app.services.knowledge_access_policy import KnowledgeAccessFilter, build_sql_access_clause
 from app.services.storage_service import connect_state_db, table_exists
 
 
@@ -21,11 +22,16 @@ _ASCII_TOKEN_PATTERN = re.compile(r"[a-z0-9_]+")
 _CHINESE_TOKEN_PATTERN = re.compile(r"[\u4e00-\u9fff]{2,}")
 
 
-def load_local_index_chunks(config: AppConfig) -> list[dict[str, Any]]:
+def load_local_index_chunks(
+    config: AppConfig,
+    *,
+    access_filter: KnowledgeAccessFilter | None = None,
+) -> list[dict[str, Any]]:
     _ensure_local_index_ready(config)
+    where_clause, parameters = build_sql_access_clause(access_filter or KnowledgeAccessFilter())
     with _LOCAL_INDEX_LOCK, connect_state_db(config) as connection:
         rows = connection.execute(
-            """
+            f"""
             SELECT
                 external_chunk_id,
                 document_id,
@@ -35,10 +41,19 @@ def load_local_index_chunks(config: AppConfig) -> list[dict[str, Any]]:
                 text,
                 theme,
                 tags_json,
+                page_number,
+                parser_name,
+                source_type,
+                tenant_id,
+                owner_user_id,
+                department_id,
+                is_public,
                 position
             FROM local_chunks
+            WHERE {where_clause}
             ORDER BY source_path, position, id
-            """
+            """,
+            parameters,
         ).fetchall()
         return [_row_to_chunk_record(row) for row in rows]
 
@@ -48,16 +63,18 @@ def search_local_index_chunks(
     query: str,
     *,
     limit: int = 80,
+    access_filter: KnowledgeAccessFilter | None = None,
 ) -> list[dict[str, Any]]:
     _ensure_local_index_ready(config)
     normalized_limit = max(1, int(limit))
+    filter_clause, filter_parameters = build_sql_access_clause(access_filter or KnowledgeAccessFilter(), table_alias="chunks")
 
     with _LOCAL_INDEX_LOCK, connect_state_db(config) as connection:
         if table_exists(connection, "local_chunks_fts"):
             match_expression = _build_match_expression(query)
             if match_expression:
                 rows = connection.execute(
-                    """
+                    f"""
                     SELECT
                         chunks.external_chunk_id,
                         chunks.document_id,
@@ -67,15 +84,23 @@ def search_local_index_chunks(
                         chunks.text,
                         chunks.theme,
                         chunks.tags_json,
+                        chunks.page_number,
+                        chunks.parser_name,
+                        chunks.source_type,
+                        chunks.tenant_id,
+                        chunks.owner_user_id,
+                        chunks.department_id,
+                        chunks.is_public,
                         chunks.position
                     FROM local_chunks_fts AS fts
                     JOIN local_chunks AS chunks
                       ON chunks.id = fts.rowid
-                    WHERE local_chunks_fts MATCH ?
+                    WHERE {filter_clause}
+                      AND local_chunks_fts MATCH ?
                     ORDER BY bm25(local_chunks_fts), chunks.source_path, chunks.position
                     LIMIT ?
                     """,
-                    (match_expression, normalized_limit),
+                    (*filter_parameters, match_expression, normalized_limit),
                 ).fetchall()
                 if rows:
                     return [_row_to_chunk_record(row) for row in rows]
@@ -93,42 +118,57 @@ def search_local_index_chunks(
             rows = connection.execute(
                 f"""
                 SELECT
-                    external_chunk_id,
-                    document_id,
-                    source_path,
-                    file_name,
-                    relative_path,
-                    text,
-                    theme,
-                    tags_json,
-                    position
-                FROM local_chunks
-                WHERE {clauses}
-                ORDER BY source_path, position, id
+                    chunks.external_chunk_id,
+                    chunks.document_id,
+                    chunks.source_path,
+                    chunks.file_name,
+                    chunks.relative_path,
+                    chunks.text,
+                    chunks.theme,
+                    chunks.tags_json,
+                    chunks.page_number,
+                    chunks.parser_name,
+                    chunks.source_type,
+                    chunks.tenant_id,
+                    chunks.owner_user_id,
+                    chunks.department_id,
+                    chunks.is_public,
+                    chunks.position
+                FROM local_chunks AS chunks
+                WHERE ({filter_clause}) AND ({clauses})
+                ORDER BY chunks.source_path, chunks.position, chunks.id
                 LIMIT ?
                 """,
-                params,
+                [*filter_parameters, *params],
             ).fetchall()
             if rows:
                 return [_row_to_chunk_record(row) for row in rows]
 
         rows = connection.execute(
-            """
+            f"""
             SELECT
-                external_chunk_id,
-                document_id,
-                source_path,
-                file_name,
-                relative_path,
-                text,
-                theme,
-                tags_json,
-                position
-            FROM local_chunks
-            ORDER BY source_path, position, id
+                chunks.external_chunk_id,
+                chunks.document_id,
+                chunks.source_path,
+                chunks.file_name,
+                chunks.relative_path,
+                chunks.text,
+                chunks.theme,
+                chunks.tags_json,
+                chunks.page_number,
+                chunks.parser_name,
+                chunks.source_type,
+                chunks.tenant_id,
+                chunks.owner_user_id,
+                chunks.department_id,
+                chunks.is_public,
+                chunks.position
+            FROM local_chunks AS chunks
+            WHERE {filter_clause}
+            ORDER BY chunks.source_path, chunks.position, chunks.id
             LIMIT ?
             """,
-            (normalized_limit,),
+            (*filter_parameters, normalized_limit),
         ).fetchall()
         return [_row_to_chunk_record(row) for row in rows]
 
@@ -215,10 +255,17 @@ def persist_local_nodes(config: AppConfig, nodes: list[BaseNode]) -> int:
                         text,
                         theme,
                         tags_json,
+                        page_number,
+                        parser_name,
+                        source_type,
+                        tenant_id,
+                        owner_user_id,
+                        department_id,
+                        is_public,
                         tags_text,
                         position
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         str(record["chunk_id"]),
@@ -229,6 +276,13 @@ def persist_local_nodes(config: AppConfig, nodes: list[BaseNode]) -> int:
                         str(record["text"]),
                         str(record["theme"]),
                         json.dumps(record["tags"], ensure_ascii=False),
+                        record["page_number"],
+                        str(record["parser_name"]),
+                        str(record["source_type"]),
+                        str(record["tenant_id"]),
+                        str(record["owner_user_id"]),
+                        str(record["department_id"]),
+                        1 if bool(record["is_public"]) else 0,
                         " ".join(record["tags"]),
                         int(record["position"]),
                     ),
@@ -290,6 +344,13 @@ def serialize_local_nodes(nodes: list[BaseNode]) -> list[dict[str, Any]]:
                 "text": text,
                 "theme": str(metadata.get("theme", "") or ""),
                 "tags": [str(item) for item in tags],
+                "page_number": metadata.get("page_number"),
+                "parser_name": str(metadata.get("parser_name", "") or ""),
+                "source_type": str(metadata.get("source_type", "") or ""),
+                "tenant_id": str(metadata.get("tenant_id", "") or ""),
+                "owner_user_id": str(metadata.get("owner_user_id") or metadata.get("user_id") or ""),
+                "department_id": str(metadata.get("department_id", "") or ""),
+                "is_public": bool(metadata.get("is_public", True)),
                 "position": position,
             }
         )
@@ -385,6 +446,13 @@ def _row_to_chunk_record(row) -> dict[str, Any]:
         "text": str(row["text"] or ""),
         "theme": str(row["theme"] or ""),
         "tags": _deserialize_tags(row["tags_json"]),
+        "page_number": int(row["page_number"]) if row["page_number"] is not None else None,
+        "parser_name": str(row["parser_name"] or ""),
+        "source_type": str(row["source_type"] or ""),
+        "tenant_id": str(row["tenant_id"] or ""),
+        "owner_user_id": str(row["owner_user_id"] or ""),
+        "department_id": str(row["department_id"] or ""),
+        "is_public": bool(int(row["is_public"] or 0)),
         "position": int(row["position"] or 0),
     }
 

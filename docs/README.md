@@ -1,5 +1,15 @@
 # Aurora Docs README
 
+## 推荐入口
+
+如果你现在关注的是 Aurora 的共享部署、安全收口或试点上线，请优先看这几份文档：
+
+- [PHASE0_SHARED_DEPLOYMENT_BASELINE.md](./PHASE0_SHARED_DEPLOYMENT_BASELINE.md)：阶段 0 定版基线、阶段路线和团队试点验收门槛
+- [PYTHON_BACKEND_RECLASSIFICATION_AND_PROTECTION.md](./PYTHON_BACKEND_RECLASSIFICATION_AND_PROTECTION.md)：Python 后端重分类方案与核心代码保护建议
+- [ARCHITECTURE_FRAMEWORK.md](./ARCHITECTURE_FRAMEWORK.md)：产品与系统架构框架
+- [SECURITY_PENDING.md](./SECURITY_PENDING.md)：仍待落地的安全待办
+- [UNFINISHED_BACKLOG.md](./UNFINISHED_BACKLOG.md)：P0 之后的持续交付待办
+
 这份 README 的目标只有一个：把 Aurora 记忆系统讲明白，让你以后回来看时，不需要先翻十几份技术路线文档。
 
 如果把记忆系统说得足够简单，它其实就在解决四个问题：

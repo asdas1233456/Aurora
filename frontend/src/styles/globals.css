@@ -1,0 +1,303 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: light;
+  --aurora-bg: #eef8f6;
+  --aurora-surface: rgba(255, 255, 255, 0.92);
+  --aurora-border: rgba(186, 230, 226, 0.78);
+  --aurora-shadow: rgba(15, 118, 110, 0.18);
+  --aurora-ink: #0f172a;
+  --aurora-muted: #405467;
+  --aurora-teal: #0f766e;
+  --aurora-cyan: #ccefee;
+  --aurora-ice: #f8fdfd;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  min-height: 100dvh;
+  background:
+    radial-gradient(circle at top left, rgba(162, 228, 223, 0.9), transparent 30%),
+    radial-gradient(circle at 85% 10%, rgba(206, 239, 246, 0.9), transparent 26%),
+    linear-gradient(180deg, #f8fdfd 0%, #ecf7f6 46%, #e7f3f1 100%);
+  color: var(--aurora-ink);
+  font-family: "HarmonyOS Sans SC", "MiSans", "Microsoft YaHei UI", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+  text-rendering: geometricPrecision;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+#root {
+  min-height: 100dvh;
+}
+
+.font-display {
+  font-family: "HarmonyOS Sans SC", "MiSans", "Microsoft YaHei UI", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+  letter-spacing: -0.02em;
+}
+
+.font-mono {
+  font-family: "JetBrains Mono", "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+}
+
+.glass-panel {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--aurora-border);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 253, 253, 0.92));
+  box-shadow:
+    0 10px 24px rgba(15, 118, 110, 0.05),
+    inset 0 1px 0 rgba(255, 255, 255, 0.82);
+  backdrop-filter: blur(5px);
+}
+
+.glass-panel.sticky {
+  position: sticky;
+}
+
+.glass-panel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(130deg, rgba(255, 255, 255, 0.12), transparent 34%),
+    linear-gradient(180deg, transparent, rgba(255, 255, 255, 0.08));
+}
+
+.surface-tile {
+  border: 1px solid rgba(204, 238, 235, 0.74);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(249, 253, 253, 0.9));
+  box-shadow:
+    0 6px 14px rgba(15, 118, 110, 0.035),
+    inset 0 1px 0 rgba(255, 255, 255, 0.78);
+}
+
+.aurora-orb {
+  position: fixed;
+  z-index: 0;
+  border-radius: 9999px;
+  filter: blur(30px);
+  opacity: 0.48;
+  pointer-events: none;
+}
+
+.aurora-orb-left {
+  left: -4rem;
+  top: 6rem;
+  height: 18rem;
+  width: 18rem;
+  background: rgba(112, 211, 201, 0.32);
+}
+
+.aurora-orb-right {
+  right: -3rem;
+  top: 7rem;
+  height: 14rem;
+  width: 14rem;
+  background: rgba(148, 213, 236, 0.36);
+}
+
+.aurora-shimmer {
+  position: relative;
+  overflow: hidden;
+}
+
+.aurora-shimmer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.55), transparent);
+  animation: aurora-shimmer 1.6s linear infinite;
+}
+
+.ice-dot-grid {
+  background-image:
+    radial-gradient(circle at center, rgba(15, 118, 110, 0.08) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0));
+  background-size: 22px 22px, auto;
+}
+
+.snow-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(15, 118, 110, 0.28) transparent;
+}
+
+.snow-scrollbar::-webkit-scrollbar {
+  height: 8px;
+  width: 8px;
+}
+
+.snow-scrollbar::-webkit-scrollbar-thumb {
+  border-radius: 9999px;
+  background: rgba(15, 118, 110, 0.22);
+}
+
+.surface-grid {
+  display: grid;
+  gap: 1rem;
+}
+
+.surface-grid-two {
+  grid-template-columns: minmax(300px, 360px) minmax(0, 1fr);
+}
+
+.surface-grid-three {
+  grid-template-columns: 16rem minmax(0, 1fr) 20rem;
+}
+
+.chat-bubble-user {
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(135deg, rgba(210, 245, 240, 0.96), rgba(226, 250, 247, 0.92));
+  border: 1px solid rgba(15, 118, 110, 0.22);
+}
+
+.chat-bubble-assistant {
+  position: relative;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid rgba(204, 238, 235, 0.82);
+  backdrop-filter: blur(4px);
+}
+
+.chat-bubble-user::before,
+.chat-bubble-assistant::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.chat-bubble-user::before {
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.18), transparent 36%);
+}
+
+.chat-bubble-assistant::before {
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.3), transparent 34%),
+    linear-gradient(180deg, transparent, rgba(15, 118, 110, 0.03));
+}
+
+.terminal-shell {
+  background:
+    radial-gradient(circle at top, rgba(255, 255, 255, 0.08), transparent 45%),
+    linear-gradient(180deg, #0f172a 0%, #020617 100%);
+  color: #e2e8f0;
+}
+
+.logs-terminal-viewport {
+  height: clamp(340px, calc(100dvh - 21rem), 680px);
+}
+
+@media (max-width: 767px) {
+  .logs-terminal-viewport {
+    height: clamp(320px, 46dvh, 430px);
+  }
+}
+
+.react-flow__controls {
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 12px 28px rgba(15, 118, 110, 0.1);
+  backdrop-filter: blur(12px);
+}
+
+.react-flow__controls-button {
+  border-bottom-color: rgba(226, 232, 240, 0.85);
+  background: transparent;
+  color: #0f766e;
+}
+
+.react-flow__controls-button:hover {
+  background: rgba(240, 253, 250, 0.92);
+}
+
+.react-flow__minimap {
+  overflow: hidden;
+  border-radius: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.76);
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 12px 28px rgba(15, 118, 110, 0.08);
+  backdrop-filter: blur(10px);
+}
+
+.react-flow__edge-path {
+  stroke-linecap: round;
+}
+
+.aurora-graph-node {
+  will-change: box-shadow, border-color;
+}
+
+.react-flow__node.dragging .aurora-graph-node,
+.react-flow__node.dragging.selectable .aurora-graph-node {
+  box-shadow:
+    0 6px 16px rgba(15, 118, 110, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.72) !important;
+}
+
+.react-flow__node.dragging {
+  cursor: grabbing;
+}
+
+.text-slate-300 {
+  color: #64748b;
+}
+
+.text-slate-400 {
+  color: #64748b;
+}
+
+.text-slate-500 {
+  color: #475569;
+}
+
+.text-slate-600 {
+  color: #334155;
+}
+
+.text-slate-700 {
+  color: #1f2937;
+}
+
+.placeholder\:text-slate-400::placeholder {
+  color: #64748b;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  .aurora-shimmer::after {
+    animation: none;
+  }
+}
+
+@keyframes aurora-shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+@media (max-width: 1279px) {
+  .surface-grid-two,
+  .surface-grid-three {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

@@ -32,6 +32,8 @@ class LocalMockAdapter(ProviderAdapter):
                 score=item.score,
                 theme=item.theme,
                 tags=item.tags,
+                chunk_id=item.chunk_id,
+                page_number=item.page_number,
             )
             for item in request.knowledge_context
         ]
@@ -79,6 +81,8 @@ def _build_citation(item) -> Citation:
         score=item.score,
         theme=item.theme,
         tags=list(item.tags),
+        chunk_id=item.chunk_id,
+        page_number=item.page_number,
     )
 
 

@@ -5,8 +5,17 @@ from __future__ import annotations
 from collections import deque
 from datetime import datetime
 from pathlib import Path
+import re
 
 from app.config import AppConfig
+
+
+_SENSITIVE_PATTERNS = [
+    re.compile(r"(?i)(authorization\s*:\s*bearer\s+)[^\s]+"),
+    re.compile(r"(?i)(bearer\s+)[a-z0-9._\-]{12,}"),
+    re.compile(r"(?i)((?:api[_-]?key|secret|password|token)\s*[:=]\s*)[^\s,;]+"),
+    re.compile(r"([A-Za-z]:\\Users\\[^\\\s]+)"),
+]
 
 
 def get_log_file_path(config: AppConfig) -> Path:
@@ -22,7 +31,7 @@ def tail_logs(config: AppConfig, limit: int = 200) -> list[str]:
         return []
 
     with log_path.open("r", encoding="utf-8", errors="ignore") as file_obj:
-        return list(deque(file_obj, maxlen=max(1, limit)))
+        return [_sanitize_log_line(line) for line in deque(file_obj, maxlen=max(1, limit))]
 
 
 def filter_logs(
@@ -114,3 +123,10 @@ def _parse_log_datetime(value: str) -> datetime | None:
                 continue
 
     return None
+
+
+def _sanitize_log_line(line: str) -> str:
+    sanitized = str(line or "")
+    for pattern in _SENSITIVE_PATTERNS:
+        sanitized = pattern.sub(lambda match: f"{match.group(1)}***", sanitized)
+    return sanitized

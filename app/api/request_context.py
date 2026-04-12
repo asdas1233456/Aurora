@@ -20,6 +20,7 @@ def build_request_context(
     user_id: str | None = None,
     project_id: str | None = None,
     session_id: str | None = None,
+    department_id: str | None = None,
     request_id: str | None = None,
     team_id: str | None = None,
     global_scope_id: str | None = None,
@@ -33,10 +34,11 @@ def build_request_context(
 
     return MemoryRequestContext(
         request_id=normalized_request_id,
-        tenant_id=_normalize_identifier(tenant_id) or "local_tenant",
+        tenant_id=_normalize_identifier(tenant_id) or _normalize_identifier(config.tenant_id) or "aurora_internal",
         user_id=normalized_user_id,
         project_id=normalized_project_id,
         session_id=_normalize_identifier(session_id) or f"session:{normalized_request_id}",
+        department_id=_normalize_identifier(department_id),
         team_id=_normalize_identifier(team_id) or "team_default",
         global_scope_id=_normalize_identifier(global_scope_id) or "global_default",
         actor_role=actor_role.strip() or "conversation",

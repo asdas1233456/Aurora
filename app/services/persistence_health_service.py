@@ -22,6 +22,8 @@ class PersistenceHealthService:
             "memory_retention_audit",
             "security_events",
             "policy_decisions",
+            "application_audit_events",
+            "app_runtime_settings",
             "system_metrics_snapshot",
         )
 

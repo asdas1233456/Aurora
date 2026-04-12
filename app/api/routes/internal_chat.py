@@ -9,7 +9,8 @@ from app.api.internal_utils import (
     serialize_request_context,
 )
 from app.api.serializers import serialize_chat_message_record, serialize_chat_session_record
-from app.api.dependencies import get_runtime_config
+from app.api.dependencies import get_runtime_config, require_internal_admin
+from app.auth import AuthenticatedUser
 from app.config import AppConfig
 from app.schemas import ChatSessionRecord
 from app.services.message_repository import MessageRepository
@@ -30,6 +31,7 @@ def list_chat_sessions(
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     runtime_config: AppConfig = Depends(get_runtime_config),
+    _user: AuthenticatedUser = Depends(require_internal_admin),
 ):
     ensure_internal_api(request)
     resolved_tenant_id = resolve_internal_identifier(
@@ -94,6 +96,7 @@ def get_chat_session_detail(
     user_id: str | None = None,
     project_id: str | None = None,
     runtime_config: AppConfig = Depends(get_runtime_config),
+    _user: AuthenticatedUser = Depends(require_internal_admin),
 ):
     ensure_internal_api(request)
     resolved_tenant_id = resolve_internal_identifier(
@@ -154,6 +157,7 @@ def recover_chat_session(
     request_id: str | None = None,
     message_limit: int = Query(default=12, ge=1, le=50),
     runtime_config: AppConfig = Depends(get_runtime_config),
+    user: AuthenticatedUser = Depends(require_internal_admin),
 ):
     ensure_internal_api(request)
     resolved_tenant_id = resolve_internal_identifier(
@@ -198,6 +202,7 @@ def recover_chat_session(
     request_context = build_internal_request_context(
         request,
         runtime_config,
+        user,
         tenant_id=session.tenant_id,
         user_id=session.user_id,
         project_id=session.project_id,

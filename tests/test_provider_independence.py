@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.config import AppConfig
+from app.modules.system.request_concurrency import RequestConcurrencyGuard
 from app.providers.factory import ProviderFactory
 from app.providers.local_mock_adapter import LocalMockAdapter
 from app.providers.openai_compatible_adapter import OpenAICompatibleAdapter
@@ -34,6 +35,7 @@ def make_config(
     embedding_api_key: str = "sk-embed",
 ) -> AppConfig:
     AbuseGuard.reset_all()
+    RequestConcurrencyGuard.reset_all()
     return AppConfig(
         base_dir=base_dir,
         data_dir=base_dir / "data",
@@ -184,7 +186,7 @@ class ProviderIndependenceTests(unittest.TestCase):
         config = make_config(Path(tempfile.mkdtemp()), llm_api_key="")
         try:
             with patch(
-                "app.services.rag_service.retrieve_chunks",
+                "app.services.capabilities.builtin.rag_query_tool.retrieve_chunks",
                 return_value=(
                     [
                         RetrievedChunk(

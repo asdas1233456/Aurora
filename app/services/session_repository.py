@@ -180,6 +180,38 @@ class SessionRepository:
 
         return self._row_to_record(row) if row is not None else None
 
+    def update_title(
+        self,
+        *,
+        tenant_id: str,
+        session_id: str,
+        title: str,
+    ) -> ChatSessionRecord | None:
+        next_title = title.strip()
+        if not next_title:
+            raise ValueError("Session title cannot be empty.")
+
+        with connect_state_db(self._config) as connection:
+            connection.execute(
+                """
+                UPDATE chat_sessions
+                SET title = ?
+                WHERE tenant_id = ? AND id = ?
+                """,
+                (next_title, tenant_id, session_id),
+            )
+            connection.commit()
+            row = connection.execute(
+                """
+                SELECT id, tenant_id, user_id, project_id, title, status, created_at, last_active_at
+                FROM chat_sessions
+                WHERE tenant_id = ? AND id = ?
+                """,
+                (tenant_id, session_id),
+            ).fetchone()
+
+        return self._row_to_record(row) if row is not None else None
+
     @staticmethod
     def _row_to_record(row) -> ChatSessionRecord:
         return ChatSessionRecord(

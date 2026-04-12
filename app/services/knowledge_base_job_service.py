@@ -1,4 +1,4 @@
-"""Knowledge-base background job service."""
+﻿"""Knowledge-base background job service."""
 
 from __future__ import annotations
 
@@ -8,10 +8,13 @@ import json
 import logging
 from pathlib import Path
 import threading
+from typing import TypeAlias
 import uuid
 
+from llama_index.core.schema import BaseNode
+
 from app.config import AppConfig
-from app.schemas import KnowledgeBaseJob, KnowledgeBaseStats
+from app.schemas import DocumentSummary, KnowledgeBaseJob, KnowledgeBaseStats
 from app.services.catalog_service import (
     get_document_status_counts,
     list_document_catalog,
@@ -21,17 +24,25 @@ from app.services.catalog_service import (
     reset_all_document_tracking,
     sync_document_catalog,
 )
-from app.services.document_service import load_documents_from_paths
+from app.services.document_materialization_service import persist_materialized_document
+from app.services.document_service import (
+    build_llama_documents_from_parsed_documents,
+    load_parsed_documents_from_paths,
+)
+from app.services.etl import ParsedDocument
 from app.services.knowledge_base_service import (
     add_nodes_with_embeddings,
     clear_retrieval_backends,
     create_nodes_from_documents,
     delete_document_chunks,
+    delete_retrieval_document_chunks,
     get_collection_count,
 )
 
 
 logger = logging.getLogger(__name__)
+
+ParsedBatch: TypeAlias = tuple[DocumentSummary, ParsedDocument, list[BaseNode]]
 
 _VALID_JOB_MODES = {"sync", "scan", "reset"}
 _TERMINAL_JOB_STATUSES = {"completed", "completed_with_errors", "failed", "cancelled"}
@@ -152,12 +163,12 @@ def _run_job(job_id: str, config: AppConfig, mode: str) -> None:
             )
             return
 
-        document_nodes = _parse_changed_documents(config, job_id, changed_documents)
+        parsed_batches = _parse_changed_documents(config, job_id, changed_documents)
         if _is_cancel_requested(job_id):
             _finish_job(config, job_id, status="cancelled", message="知识库任务已取消。")
             return
 
-        indexed_count, failed_count = _write_index_updates(config, job_id, document_nodes)
+        indexed_count, failed_count = _write_index_updates(config, job_id, parsed_batches)
 
         refreshed_documents = list_document_catalog(config)
         stats = _build_stats(
@@ -199,7 +210,7 @@ def _prepare_catalog(
     config: AppConfig,
     job_id: str,
     mode: str,
-) -> tuple[list[object], list[str]]:
+) -> tuple[list[DocumentSummary], list[str]]:
     if mode == "sync":
         _set_job(
             config,
@@ -261,7 +272,11 @@ def _remove_deleted_documents(
     return removed_count
 
 
-def _parse_changed_documents(config: AppConfig, job_id: str, changed_documents: list[object]):
+def _parse_changed_documents(
+    config: AppConfig,
+    job_id: str,
+    changed_documents: list[DocumentSummary],
+) -> list[ParsedBatch]:
     _set_job(
         config,
         job_id,
@@ -270,13 +285,13 @@ def _parse_changed_documents(config: AppConfig, job_id: str, changed_documents: 
         message="正在解析待同步文档并生成切片。",
     )
 
-    document_nodes: list[tuple[object, list[object]]] = []
+    parsed_batches: list[ParsedBatch] = []
     total_chunks = 0
     for index, document in enumerate(changed_documents, start=1):
         if _is_cancel_requested(job_id):
-            return document_nodes
+            return parsed_batches
 
-        source_documents = load_documents_from_paths(
+        parsed_documents = load_parsed_documents_from_paths(
             [document.path],
             config.data_dir,
             metadata_by_path={
@@ -284,12 +299,21 @@ def _parse_changed_documents(config: AppConfig, job_id: str, changed_documents: 
                     "document_id": document.document_id,
                     "theme": document.theme,
                     "tags": document.tags,
+                    "tenant_id": document.tenant_id,
+                    "user_id": document.owner_user_id,
+                    "department_id": document.department_id,
+                    "is_public": document.is_public,
                 }
             },
         )
-        nodes = create_nodes_from_documents(config, source_documents)
+        if not parsed_documents:
+            continue
+
+        parsed_document = parsed_documents[0]
+        llama_documents = build_llama_documents_from_parsed_documents(parsed_documents)
+        nodes = create_nodes_from_documents(config, llama_documents)
         total_chunks += len(nodes)
-        document_nodes.append((document, nodes))
+        parsed_batches.append((document, parsed_document, nodes))
         _set_job(
             config,
             job_id,
@@ -297,20 +321,20 @@ def _parse_changed_documents(config: AppConfig, job_id: str, changed_documents: 
             total_chunks=total_chunks,
             message=f"已完成 {index}/{len(changed_documents)} 份文档解析。",
         )
-    return document_nodes
+    return parsed_batches
 
 
 def _write_index_updates(
     config: AppConfig,
     job_id: str,
-    document_nodes: list[tuple[object, list[object]]],
+    parsed_batches: list[ParsedBatch],
 ) -> tuple[int, int]:
     indexed_count = 0
     failed_count = 0
     processed_chunks = 0
     processed_documents = 0
 
-    for index, (document, nodes) in enumerate(document_nodes, start=1):
+    for index, (document, parsed_document, nodes) in enumerate(parsed_batches, start=1):
         if _is_cancel_requested(job_id):
             break
 
@@ -318,13 +342,14 @@ def _write_index_updates(
             config,
             job_id,
             stage="indexing",
-            progress=0.38 + (0.5 * (index - 1) / max(1, len(document_nodes))),
+            progress=0.38 + (0.5 * (index - 1) / max(1, len(parsed_batches))),
             processed_documents=processed_documents,
             processed_chunks=processed_chunks,
             message=f"正在写入文档：{document.name}",
         )
 
-        delete_document_chunks(config, document.path)
+        # 先清理热路径检索数据，避免旧 chunk 残留；结构化版本在新版本落库前先保留。
+        delete_retrieval_document_chunks(config, document.path)
         try:
             inserted_chunks = add_nodes_with_embeddings(
                 config,
@@ -334,13 +359,21 @@ def _write_index_updates(
                     job_id,
                     stage="indexing",
                     progress=0.38
-                    + 0.5
-                    * (((index - 1) + (inserted / max(1, total))) / max(1, len(document_nodes))),
+                    + 0.5 * (((index - 1) + (inserted / max(1, total))) / max(1, len(parsed_batches))),
                     processed_documents=processed_documents,
                     processed_chunks=processed_chunks + inserted,
                     message=f"正在写入文档：{document.name} ({inserted}/{total} 切片)",
                 ),
                 cancel_checker=lambda: _is_cancel_requested(job_id),
+            )
+
+            # 同一份 ETL 输出同时物化到结构化存储，保证检索层和预览层共享同一份解析结果。
+            materialized_payload = persist_materialized_document(
+                config,
+                document=document,
+                parsed_document=parsed_document,
+                nodes=nodes,
+                content_hash=document.content_hash,
             )
             processed_chunks += inserted_chunks
             processed_documents += 1
@@ -350,7 +383,8 @@ def _write_index_updates(
                 {
                     document.path: {
                         "content_hash": document.content_hash,
-                        "chunk_count": len(nodes),
+                        "chunk_count": inserted_chunks,
+                        **materialized_payload,
                     }
                 },
             )
@@ -395,7 +429,7 @@ def _build_stats(
 
 def _build_created_message(mode: str) -> str:
     if mode == "reset":
-        return "已创建完全重置任务。"
+        return "已创建全量重置任务。"
     if mode == "scan":
         return "已创建目录扫描任务。"
     return "已创建快速同步任务。"

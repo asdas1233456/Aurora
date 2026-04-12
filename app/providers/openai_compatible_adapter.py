@@ -154,7 +154,8 @@ def _format_knowledge(request: BusinessRequest) -> str:
         return "(none)"
     return "\n\n".join(
         (
-            f"[{item.knowledge_id}] file={item.file_name} path={item.relative_path} score={item.score}\n"
+            f"[{item.knowledge_id}] file={item.file_name} path={item.relative_path} "
+            f"page={item.page_number or 'na'} chunk={item.chunk_id or 'na'} score={item.score}\n"
             f"{item.content}"
         )
         for item in request.knowledge_context

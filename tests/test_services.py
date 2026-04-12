@@ -1,15 +1,39 @@
-import tempfile
+﻿import tempfile
 import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+import sqlite3
+import zipfile
+
+try:
+    import fitz
+except ImportError:  # pragma: no cover - exercised when PyMuPDF is not installed.
+    fitz = None
 
 from app.llm import _build_local_answer
 from app.config import AppConfig
-from app.schemas import ChatMessageCreate, ChatResult, MemoryFact, MemoryFactCreate, MemoryRequestContext, RetrievedChunk
+from app.modules.system.request_concurrency import RequestConcurrencyGuard
+from app.schemas import (
+    ChatMessageCreate,
+    ChatResult,
+    KnowledgeBaseJob,
+    MemoryFact,
+    MemoryFactCreate,
+    MemoryRequestContext,
+    RetrievedChunk,
+)
 from app.services.abuse_guard import AbuseGuard
 from app.services.audit_service import AuditService
+from app.services.capabilities import (
+    CapabilityAccessError,
+    CapabilityAssembler,
+    CapabilityContext,
+    CapabilityDescriptor,
+    CapabilityRegistry,
+)
+from app.services.capabilities.base import BaseTool
 from app.services.chat_memory_llm_review_service import ChatMemoryLLMReviewService
 from app.services.chat_memory_models import ChatMemoryCandidate
 from app.services.chat_memory_service import ChatMemoryService
@@ -34,23 +58,38 @@ from app.services.catalog_service import (
     sync_document_catalog,
     update_document_annotations,
 )
+from app.services.document_materialization_service import (
+    load_materialized_document_preview,
+    persist_materialized_document,
+)
 from app.services.document_service import (
+    build_llama_documents_from_parsed_documents,
+    build_document_preview_metadata,
+    load_parsed_documents_from_paths,
     load_documents_from_paths,
     read_document_preview,
+    read_document_preview_payload,
     rename_document,
 )
 from app.services.document_taxonomy import infer_document_category
+from app.services.etl.models import ExtractedSegment, ParsedDocument
 from app.services.knowledge_base_job_service import get_job, start_rebuild_job
 from app.services.knowledge_base_service import (
     add_nodes_with_embeddings,
     create_nodes_from_documents,
     get_collection_count,
 )
-from app.services.knowledge_graph_service import build_knowledge_graph
+from app.services.knowledge_access_policy import KnowledgeAccessFilter
+from app.services.knowledge_graph_service import (
+    build_knowledge_graph,
+    build_knowledge_graph_from_documents,
+)
 from app.services.log_service import filter_logs
-from app.services.rag_service import answer_with_rag
+from app.services.local_index_service import search_local_index_chunks
+from app.services.rag_service import answer_with_rag, build_citations
 from app.services.retrieval_service import rerank_chunks, retrieve_chunks, rewrite_question
 from app.services.settings_service import build_config_from_settings_values, validate_app_settings
+from app.services.storage_service import connect_state_db, get_state_db_path
 
 
 def make_config(
@@ -60,6 +99,7 @@ def make_config(
     embedding_api_key: str = "sk-embed",
 ) -> AppConfig:
     AbuseGuard.reset_all()
+    RequestConcurrencyGuard.reset_all()
     return AppConfig(
         base_dir=base_dir,
         data_dir=base_dir / "data",
@@ -74,6 +114,119 @@ def make_config(
         collection_name="test_collection",
         memory_llm_review_enabled=False,
     )
+
+
+def create_minimal_docx(file_path: Path) -> None:
+    with zipfile.ZipFile(file_path, "w") as archive:
+        archive.writestr(
+            "[Content_Types].xml",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>""",
+        )
+        archive.writestr(
+            "_rels/.rels",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>""",
+        )
+        archive.writestr(
+            "word/document.xml",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r><w:t>Aurora Word parser heading</w:t></w:r></w:p>
+    <w:p><w:r><w:t>Word paragraph for ETL verification.</w:t></w:r></w:p>
+    <w:tbl>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>Name</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>Owner</w:t></w:r></w:p></w:tc>
+      </w:tr>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>Aurora</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>QA Team</w:t></w:r></w:p></w:tc>
+      </w:tr>
+    </w:tbl>
+  </w:body>
+</w:document>""",
+        )
+
+
+def create_minimal_xlsx(file_path: Path) -> None:
+    with zipfile.ZipFile(file_path, "w") as archive:
+        archive.writestr(
+            "[Content_Types].xml",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+</Types>""",
+        )
+        archive.writestr(
+            "_rels/.rels",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>""",
+        )
+        archive.writestr(
+            "xl/workbook.xml",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+          xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="Cases" sheetId="1" r:id="rId1"/>
+  </sheets>
+</workbook>""",
+        )
+        archive.writestr(
+            "xl/_rels/workbook.xml.rels",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+</Relationships>""",
+        )
+        archive.writestr(
+            "xl/worksheets/sheet1.xml",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1">
+      <c r="A1" t="inlineStr"><is><t>Case ID</t></is></c>
+      <c r="B1" t="inlineStr"><is><t>Priority</t></is></c>
+    </row>
+    <row r="2">
+      <c r="A2" t="inlineStr"><is><t>API-001</t></is></c>
+      <c r="B2" t="inlineStr"><is><t>P0</t></is></c>
+    </row>
+  </sheetData>
+</worksheet>""",
+        )
+
+
+class FakeHttpResponse:
+    def __init__(
+        self,
+        *,
+        text: str,
+        url: str = "https://example.test/aurora",
+        content_type: str = "text/html; charset=utf-8",
+        status_code: int = 200,
+    ) -> None:
+        self.text = text
+        self.url = url
+        self.status_code = status_code
+        self.headers = {"Content-Type": content_type}
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
 
 
 class DocumentServiceTests(unittest.TestCase):
@@ -142,6 +295,495 @@ class DocumentServiceTests(unittest.TestCase):
 
             self.assertIn("release_gate:", preview)
             self.assertIn("rollback: ready", preview)
+
+    @unittest.skipIf(fitz is None, "PyMuPDF is not installed")
+    def test_load_documents_from_paths_splits_pdf_into_page_level_documents(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = make_config(Path(temp_dir))
+            config.data_dir.mkdir(parents=True, exist_ok=True)
+            pdf_path = config.data_dir / "guide.pdf"
+
+            pdf = fitz.open()
+            first_page = pdf.new_page()
+            first_page.insert_text((72, 72), "Aurora PDF page one\nsetup instructions")
+            second_page = pdf.new_page()
+            second_page.insert_text((72, 72), "Aurora PDF page two\nruntime checklist")
+            pdf.save(pdf_path)
+            pdf.close()
+
+            documents = load_documents_from_paths([pdf_path], config.data_dir)
+
+            self.assertEqual(len(documents), 2)
+            self.assertEqual(documents[0].metadata["page_number"], 1)
+            self.assertEqual(documents[1].metadata["page_number"], 2)
+            self.assertEqual(documents[0].metadata["source_type"], "pdf")
+            self.assertIn("Page 1", documents[0].get_content())
+            self.assertIn("setup instructions", documents[0].get_content())
+            self.assertIn("runtime checklist", documents[1].get_content())
+
+    def test_load_documents_from_paths_supports_docx_and_xlsx(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = make_config(Path(temp_dir))
+            config.data_dir.mkdir(parents=True, exist_ok=True)
+            docx_path = config.data_dir / "guide.docx"
+            xlsx_path = config.data_dir / "cases.xlsx"
+            create_minimal_docx(docx_path)
+            create_minimal_xlsx(xlsx_path)
+
+            documents = load_documents_from_paths([docx_path, xlsx_path], config.data_dir)
+
+            self.assertEqual(len(documents), 2)
+            self.assertIn("Word parser heading", documents[0].get_content())
+            self.assertIn("Table 1", documents[0].get_content())
+            self.assertIn("Sheet: Cases", documents[1].get_content())
+            self.assertIn("API-001", documents[1].get_content())
+
+    def test_read_document_preview_payload_exposes_xlsx_sheet_metadata(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = make_config(Path(temp_dir))
+            config.data_dir.mkdir(parents=True, exist_ok=True)
+            xlsx_path = config.data_dir / "cases.xlsx"
+            create_minimal_xlsx(xlsx_path)
+
+            preview_payload = read_document_preview_payload(
+                xlsx_path,
+                max_chars=500,
+                document_id="doc-xlsx",
+            )
+
+            self.assertEqual(preview_payload.document_id, "doc-xlsx")
+            self.assertEqual(preview_payload.metadata.file_type, "xlsx")
+            self.assertEqual(preview_payload.metadata.sheet_count, 1)
+            self.assertEqual(preview_payload.metadata.sheet_names, ["Cases"])
+            self.assertEqual(preview_payload.metadata.segment_count, 1)
+            self.assertIn("API-001", preview_payload.preview)
+
+    def test_build_document_preview_metadata_collects_pdf_page_numbers(self):
+        parsed_document = ParsedDocument(
+            source_id="pdf-source-1",
+            source_path="C:/docs/guide.pdf",
+            relative_path="guide.pdf",
+            file_name="guide.pdf",
+            file_type="pdf",
+            parser_name="pypdf_pdf_parser",
+            content_markdown="# guide.pdf",
+            content_json={
+                "file_type": "pdf",
+                "parser_name": "pypdf_pdf_parser",
+                "page_count": 2,
+            },
+            segments=[
+                ExtractedSegment(
+                    segment_id="seg-1",
+                    sequence=1,
+                    content_text="Page one content",
+                    content_markdown="## Page 1\n\nPage one content",
+                    page_number=1,
+                    metadata={"segment_kind": "page", "source_type": "pdf"},
+                ),
+                ExtractedSegment(
+                    segment_id="seg-2",
+                    sequence=2,
+                    content_text="Page two content",
+                    content_markdown="## Page 2\n\nPage two content",
+                    page_number=2,
+                    metadata={"segment_kind": "page", "source_type": "pdf"},
+                ),
+            ],
+        )
+
+        metadata = build_document_preview_metadata(parsed_document)
+
+        self.assertEqual(metadata.file_type, "pdf")
+        self.assertEqual(metadata.parser_name, "pypdf_pdf_parser")
+        self.assertEqual(metadata.page_count, 2)
+        self.assertEqual(metadata.page_numbers, [1, 2])
+        self.assertEqual(metadata.segment_count, 2)
+
+    def test_materialized_document_preview_reads_from_structured_storage(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = make_config(Path(temp_dir), llm_api_key="", embedding_api_key="")
+            config.data_dir.mkdir(parents=True, exist_ok=True)
+            file_path = config.data_dir / "guide.md"
+            file_path.write_text(
+                "# Aurora Guide\n\nStructured preview text for the materialized storage test.\n",
+                encoding="utf-8",
+            )
+
+            document = list_document_catalog(config)[0]
+            parsed_documents = load_parsed_documents_from_paths(
+                [file_path],
+                config.data_dir,
+                metadata_by_path={
+                    document.path: {
+                        "document_id": document.document_id,
+                        "theme": document.theme,
+                        "tags": document.tags,
+                    }
+                },
+            )
+            parsed_document = parsed_documents[0]
+            llama_documents = build_llama_documents_from_parsed_documents(parsed_documents)
+            nodes = create_nodes_from_documents(config, llama_documents)
+
+            materialized_payload = persist_materialized_document(
+                config,
+                document=document,
+                parsed_document=parsed_document,
+                nodes=nodes,
+                content_hash=document.content_hash,
+            )
+            mark_documents_indexed(
+                config,
+                {
+                    document.path: {
+                        "content_hash": document.content_hash,
+                        "chunk_count": len(nodes),
+                        **materialized_payload,
+                    }
+                },
+            )
+
+            stored_document = list_document_catalog(config)[0]
+            preview_payload = load_materialized_document_preview(
+                config,
+                document=stored_document,
+                max_chars=500,
+            )
+
+            self.assertIsNotNone(preview_payload)
+            assert preview_payload is not None
+            self.assertEqual(stored_document.active_version_id, materialized_payload["version_id"])
+            self.assertEqual(preview_payload.metadata.file_type, "md")
+            self.assertEqual(preview_payload.metadata.segment_count, 1)
+            self.assertIn("Structured preview text", preview_payload.preview)
+
+            with connect_state_db(config) as connection:
+                version_count = connection.execute(
+                    "SELECT COUNT(*) AS count FROM document_versions"
+                ).fetchone()
+                segment_count = connection.execute(
+                    "SELECT COUNT(*) AS count FROM document_segments"
+                ).fetchone()
+                chunk_count = connection.execute(
+                    "SELECT COUNT(*) AS count FROM document_chunks"
+                ).fetchone()
+
+            self.assertEqual(int(version_count["count"]), 1)
+            self.assertEqual(int(segment_count["count"]), 1)
+            self.assertGreaterEqual(int(chunk_count["count"]), 1)
+
+    @patch("app.services.etl.parsers.url_parser.requests.get")
+    def test_load_documents_from_paths_supports_url_shortcuts(self, mock_get):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = make_config(Path(temp_dir))
+            config.data_dir.mkdir(parents=True, exist_ok=True)
+            url_path = config.data_dir / "aurora.url"
+            url_path.write_text("[InternetShortcut]\nURL=https://example.test/aurora\n", encoding="utf-8")
+            mock_get.return_value = FakeHttpResponse(
+                text="""
+                <html>
+                  <head><title>Aurora Docs</title></head>
+                  <body>
+                    <main>
+                      <h1>Knowledge Base</h1>
+                      <p>URL parser verification content.</p>
+                    </main>
+                  </body>
+                </html>
+                """,
+            )
+
+            documents = load_documents_from_paths([url_path], config.data_dir)
+            preview = read_document_preview(url_path, max_chars=500)
+
+            self.assertEqual(len(documents), 1)
+            self.assertIn("Knowledge Base", documents[0].get_content())
+            self.assertIn("URL parser verification content.", preview)
+
+            preview_payload = read_document_preview_payload(
+                url_path,
+                max_chars=500,
+                document_id="doc-url",
+            )
+            self.assertEqual(preview_payload.metadata.file_type, "url")
+            self.assertEqual(preview_payload.metadata.source_url, "https://example.test/aurora")
+            self.assertEqual(preview_payload.metadata.resolved_url, "https://example.test/aurora")
+            self.assertEqual(preview_payload.metadata.title, "Aurora Docs")
+
+    @patch("app.services.etl.parsers.url_parser.requests.get")
+    def test_url_shortcut_parser_falls_back_to_title_and_meta_description(self, mock_get):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = make_config(Path(temp_dir))
+            config.data_dir.mkdir(parents=True, exist_ok=True)
+            url_path = config.data_dir / "spa-shell.url"
+            url_path.write_text("[InternetShortcut]\nURL=https://example.test/spa\n", encoding="utf-8")
+            mock_get.return_value = FakeHttpResponse(
+                text="""
+                <html>
+                  <head>
+                    <title>Aurora SPA Shell</title>
+                    <meta name="description" content="Single-page application landing shell." />
+                  </head>
+                  <body>
+                    <div id="root"></div>
+                  </body>
+                </html>
+                """,
+                url="https://example.test/spa",
+            )
+
+            documents = load_documents_from_paths([url_path], config.data_dir)
+            preview = read_document_preview(url_path, max_chars=500)
+
+            self.assertEqual(len(documents), 1)
+            self.assertIn("Aurora SPA Shell", documents[0].get_content())
+            self.assertIn("Single-page application landing shell.", preview)
+
+class StorageServiceTests(unittest.TestCase):
+    def test_connect_state_db_upgrades_legacy_document_access_schema(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = make_config(Path(temp_dir))
+            db_path = get_state_db_path(config)
+
+            legacy_connection = sqlite3.connect(db_path)
+            legacy_connection.executescript(
+                """
+                CREATE TABLE documents (
+                    document_id TEXT PRIMARY KEY,
+                    path TEXT NOT NULL UNIQUE,
+                    relative_path TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    extension TEXT NOT NULL,
+                    size_bytes INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL DEFAULT '',
+                    stat_size_bytes INTEGER NOT NULL DEFAULT 0,
+                    stat_updated_at TEXT NOT NULL DEFAULT '',
+                    content_hash TEXT NOT NULL DEFAULT '',
+                    indexed_hash TEXT NOT NULL DEFAULT '',
+                    last_processed_hash TEXT NOT NULL DEFAULT '',
+                    theme TEXT NOT NULL DEFAULT '',
+                    tags_json TEXT NOT NULL DEFAULT '[]',
+                    citation_count INTEGER NOT NULL DEFAULT 0,
+                    chunk_count INTEGER NOT NULL DEFAULT 0,
+                    last_indexed_at TEXT NOT NULL DEFAULT '',
+                    last_error TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    created_at TEXT NOT NULL DEFAULT '',
+                    updated_row_at TEXT NOT NULL DEFAULT '',
+                    active_version_id TEXT NOT NULL DEFAULT '',
+                    file_type TEXT NOT NULL DEFAULT '',
+                    parser_name TEXT NOT NULL DEFAULT '',
+                    segment_count INTEGER NOT NULL DEFAULT 0,
+                    page_count INTEGER NOT NULL DEFAULT 0,
+                    sheet_count INTEGER NOT NULL DEFAULT 0,
+                    title TEXT NOT NULL DEFAULT '',
+                    source_url TEXT NOT NULL DEFAULT '',
+                    resolved_url TEXT NOT NULL DEFAULT ''
+                );
+
+                CREATE TABLE document_versions (
+                    version_id TEXT PRIMARY KEY,
+                    document_id TEXT NOT NULL,
+                    source_document_id TEXT NOT NULL DEFAULT '',
+                    source_path TEXT NOT NULL DEFAULT '',
+                    relative_path TEXT NOT NULL DEFAULT '',
+                    file_name TEXT NOT NULL DEFAULT '',
+                    content_hash TEXT NOT NULL DEFAULT '',
+                    file_type TEXT NOT NULL DEFAULT '',
+                    parser_name TEXT NOT NULL DEFAULT '',
+                    segment_count INTEGER NOT NULL DEFAULT 0,
+                    page_count INTEGER NOT NULL DEFAULT 0,
+                    sheet_count INTEGER NOT NULL DEFAULT 0,
+                    title TEXT NOT NULL DEFAULT '',
+                    source_url TEXT NOT NULL DEFAULT '',
+                    resolved_url TEXT NOT NULL DEFAULT '',
+                    manifest_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL DEFAULT ''
+                );
+
+                CREATE TABLE document_chunks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chunk_id TEXT NOT NULL DEFAULT '',
+                    version_id TEXT NOT NULL,
+                    document_id TEXT NOT NULL,
+                    segment_id TEXT DEFAULT NULL,
+                    source_path TEXT NOT NULL DEFAULT '',
+                    file_name TEXT NOT NULL DEFAULT '',
+                    relative_path TEXT NOT NULL DEFAULT '',
+                    text TEXT NOT NULL DEFAULT '',
+                    theme TEXT NOT NULL DEFAULT '',
+                    tags_json TEXT NOT NULL DEFAULT '[]',
+                    tags_text TEXT NOT NULL DEFAULT '',
+                    page_number INTEGER DEFAULT NULL,
+                    sheet_name TEXT NOT NULL DEFAULT '',
+                    parser_name TEXT NOT NULL DEFAULT '',
+                    source_type TEXT NOT NULL DEFAULT '',
+                    position INTEGER NOT NULL DEFAULT 0,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL DEFAULT ''
+                );
+
+                CREATE TABLE local_chunks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    external_chunk_id TEXT NOT NULL DEFAULT '',
+                    document_id TEXT NOT NULL DEFAULT '',
+                    source_path TEXT NOT NULL,
+                    file_name TEXT NOT NULL,
+                    relative_path TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    theme TEXT NOT NULL DEFAULT '',
+                    tags_json TEXT NOT NULL DEFAULT '[]',
+                    tags_text TEXT NOT NULL DEFAULT '',
+                    page_number INTEGER DEFAULT NULL,
+                    parser_name TEXT NOT NULL DEFAULT '',
+                    source_type TEXT NOT NULL DEFAULT '',
+                    position INTEGER NOT NULL DEFAULT 0
+                );
+
+                INSERT INTO documents (
+                    document_id,
+                    path,
+                    relative_path,
+                    name,
+                    extension,
+                    status
+                ) VALUES (
+                    'doc-legacy',
+                    'C:/legacy/guide.md',
+                    'guide.md',
+                    'guide.md',
+                    '.md',
+                    'indexed'
+                );
+
+                INSERT INTO document_versions (
+                    version_id,
+                    document_id,
+                    source_path,
+                    relative_path,
+                    file_name
+                ) VALUES (
+                    'ver-legacy',
+                    'doc-legacy',
+                    'C:/legacy/guide.md',
+                    'guide.md',
+                    'guide.md'
+                );
+
+                INSERT INTO document_chunks (
+                    chunk_id,
+                    version_id,
+                    document_id,
+                    source_path,
+                    file_name,
+                    relative_path,
+                    text,
+                    position
+                ) VALUES (
+                    'chunk-legacy',
+                    'ver-legacy',
+                    'doc-legacy',
+                    'C:/legacy/guide.md',
+                    'guide.md',
+                    'guide.md',
+                    'legacy chunk',
+                    0
+                );
+
+                INSERT INTO local_chunks (
+                    external_chunk_id,
+                    document_id,
+                    source_path,
+                    file_name,
+                    relative_path,
+                    text,
+                    position
+                ) VALUES (
+                    'local-legacy',
+                    'doc-legacy',
+                    'C:/legacy/guide.md',
+                    'guide.md',
+                    'guide.md',
+                    'legacy local chunk',
+                    0
+                );
+                """
+            )
+            legacy_connection.commit()
+            legacy_connection.close()
+
+            with connect_state_db(config) as connection:
+                document_columns = {
+                    str(row["name"]) for row in connection.execute("PRAGMA table_info(documents)")
+                }
+                document_version_columns = {
+                    str(row["name"]) for row in connection.execute("PRAGMA table_info(document_versions)")
+                }
+                document_chunk_columns = {
+                    str(row["name"]) for row in connection.execute("PRAGMA table_info(document_chunks)")
+                }
+                local_chunk_columns = {
+                    str(row["name"]) for row in connection.execute("PRAGMA table_info(local_chunks)")
+                }
+                index_names = {
+                    str(row["name"])
+                    for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx_%_access'"
+                    )
+                }
+                document_access_row = connection.execute(
+                    """
+                    SELECT tenant_id, owner_user_id, department_id, is_public
+                    FROM documents
+                    WHERE document_id = 'doc-legacy'
+                    """
+                ).fetchone()
+                local_chunk_access_row = connection.execute(
+                    """
+                    SELECT tenant_id, owner_user_id, department_id, is_public
+                    FROM local_chunks
+                    WHERE external_chunk_id = 'local-legacy'
+                    """
+                ).fetchone()
+
+            self.assertTrue(
+                {"tenant_id", "owner_user_id", "department_id", "is_public"}.issubset(document_columns)
+            )
+            self.assertTrue(
+                {"tenant_id", "owner_user_id", "department_id", "is_public"}.issubset(
+                    document_version_columns
+                )
+            )
+            self.assertTrue(
+                {"tenant_id", "owner_user_id", "department_id", "is_public"}.issubset(
+                    document_chunk_columns
+                )
+            )
+            self.assertTrue(
+                {"tenant_id", "owner_user_id", "department_id", "is_public"}.issubset(local_chunk_columns)
+            )
+            self.assertEqual(
+                index_names,
+                {
+                    "idx_documents_access",
+                    "idx_document_versions_access",
+                    "idx_document_chunks_access",
+                    "idx_local_chunks_access",
+                },
+            )
+            self.assertEqual(dict(document_access_row), {
+                "tenant_id": "",
+                "owner_user_id": "",
+                "department_id": "",
+                "is_public": 1,
+            })
+            self.assertEqual(dict(local_chunk_access_row), {
+                "tenant_id": "",
+                "owner_user_id": "",
+                "department_id": "",
+                "is_public": 1,
+            })
 
 
 class CatalogServiceTests(unittest.TestCase):
@@ -248,6 +890,67 @@ class KnowledgeGraphTests(unittest.TestCase):
             self.assertGreater(graph.summary["edge_count"], 0)
             self.assertIn("Custom Python", {node.label for node in graph.nodes})
 
+    def test_build_knowledge_graph_includes_governance_summary_and_document_meta(self):
+        config = make_config(Path(tempfile.mkdtemp()))
+        documents = [
+            SimpleNamespace(
+                document_id="doc-indexed",
+                name="release-notes.md",
+                relative_path="release-notes.md",
+                updated_at="2026-04-03T10:00:00",
+                extension="md",
+                size_bytes=4096,
+                theme="Release",
+                tags=["release", "notes"],
+                status="indexed",
+                chunk_count=12,
+                citation_count=4,
+                last_indexed_at="2026-04-03T10:10:00",
+                last_error="",
+                title="Release Notes",
+                source_url="",
+                resolved_url="",
+                path="release-notes.md",
+            ),
+            SimpleNamespace(
+                document_id="doc-failed",
+                name="incident.csv",
+                relative_path="incident.csv",
+                updated_at="2026-04-03T09:00:00",
+                extension="csv",
+                size_bytes=2048,
+                theme="Operations",
+                tags=[],
+                status="failed",
+                chunk_count=3,
+                citation_count=0,
+                last_indexed_at="",
+                last_error="parse failed",
+                title="Incident Report",
+                source_url="https://example.test/report",
+                resolved_url="https://example.test/report",
+                path="incident.csv",
+            ),
+        ]
+
+        graph = build_knowledge_graph_from_documents(config, documents)
+
+        self.assertEqual(graph.summary["indexed_document_count"], 1)
+        self.assertEqual(graph.summary["attention_document_count"], 1)
+        self.assertEqual(graph.summary["tagged_document_count"], 1)
+        self.assertEqual(graph.summary["untagged_document_count"], 1)
+        self.assertEqual(graph.summary["citation_covered_document_count"], 1)
+        self.assertIn("Release", {item["label"] for item in graph.summary["top_categories"]})
+        self.assertIn("MD", {item["label"] for item in graph.summary["top_file_types"]})
+
+        failed_document_node = next(
+            node for node in graph.nodes if node.node_type == "document" and node.meta["document_id"] == "doc-failed"
+        )
+        self.assertEqual(failed_document_node.meta["status"], "failed")
+        self.assertEqual(failed_document_node.meta["last_error"], "parse failed")
+        self.assertEqual(failed_document_node.meta["source_url"], "https://example.test/report")
+        self.assertEqual(failed_document_node.meta["resolved_url"], "https://example.test/report")
+
     def test_infer_document_category_handles_numbered_file_names(self):
         self.assertEqual(infer_document_category("01_python_testing.md"), "Python Testing")
 
@@ -332,7 +1035,6 @@ class RetrievalTests(unittest.TestCase):
                 """# Linux 常用命令
 
 ## 进程与端口检查
-
 ### 查看进程
 
 ```bash
@@ -348,7 +1050,6 @@ ss -lntp
 ```
 
 ## 文件与目录操作
-
 ### 查看当前目录
 
 ```bash
@@ -374,27 +1075,339 @@ pwd
             self.assertTrue("netstat" in chunks[0].text or "ss -lntp" in chunks[0].text)
             self.assertNotIn("查看当前目录", chunks[0].text)
 
+    def test_local_retrieval_filters_private_chunks_by_access_metadata(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = make_config(Path(temp_dir), llm_api_key="", embedding_api_key="")
+            config.data_dir.mkdir(parents=True, exist_ok=True)
+
+            owner_path = config.data_dir / "owner.md"
+            department_path = config.data_dir / "department.md"
+            hidden_path = config.data_dir / "hidden.md"
+            public_path = config.data_dir / "public.md"
+
+            owner_path.write_text(
+                "# Owner\n\nAurora visibility marker owner scope keeps fixture isolation readable.",
+                encoding="utf-8",
+            )
+            department_path.write_text(
+                "# Department\n\nAurora visibility marker department scope keeps fixture isolation readable.",
+                encoding="utf-8",
+            )
+            hidden_path.write_text(
+                "# Hidden\n\nAurora visibility marker hidden scope keeps fixture isolation readable.",
+                encoding="utf-8",
+            )
+            public_path.write_text(
+                "# Public\n\nAurora visibility marker public scope keeps fixture isolation readable.",
+                encoding="utf-8",
+            )
+
+            documents = load_documents_from_paths(
+                [owner_path, department_path, hidden_path, public_path],
+                config.data_dir,
+                metadata_by_path={
+                    str(owner_path.resolve()): {
+                        "document_id": "doc-owner",
+                        "tenant_id": "t1",
+                        "user_id": "u1",
+                        "is_public": False,
+                    },
+                    str(department_path.resolve()): {
+                        "document_id": "doc-department",
+                        "tenant_id": "t1",
+                        "user_id": "u2",
+                        "department_id": "qa",
+                        "is_public": False,
+                    },
+                    str(hidden_path.resolve()): {
+                        "document_id": "doc-hidden",
+                        "tenant_id": "t1",
+                        "user_id": "u2",
+                        "department_id": "ops",
+                        "is_public": False,
+                    },
+                    str(public_path.resolve()): {
+                        "document_id": "doc-public",
+                        "tenant_id": "t2",
+                        "user_id": "u9",
+                        "is_public": True,
+                    },
+                },
+            )
+            nodes = create_nodes_from_documents(config, documents)
+            inserted = add_nodes_with_embeddings(config, nodes)
+
+            self.assertEqual(inserted, 4)
+
+            chunks, _, _ = retrieve_chunks(
+                "Aurora visibility marker fixture isolation",
+                config,
+                top_k=10,
+                access_filter=KnowledgeAccessFilter(
+                    tenant_id="t1",
+                    user_id="u1",
+                    department_id="qa",
+                    allow_public=True,
+                ),
+            )
+
+            retrieved_document_ids = {chunk.document_id for chunk in chunks}
+            self.assertIn("doc-owner", retrieved_document_ids)
+            self.assertIn("doc-department", retrieved_document_ids)
+            self.assertIn("doc-public", retrieved_document_ids)
+            self.assertNotIn("doc-hidden", retrieved_document_ids)
+
+    def test_local_index_like_search_works_without_fts_alias_mismatch(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = make_config(Path(temp_dir), llm_api_key="", embedding_api_key="")
+            config.data_dir.mkdir(parents=True, exist_ok=True)
+            file_path = config.data_dir / "linux_ports.md"
+            file_path.write_text(
+                "# Linux 端口排查\n\nss -lntp 和 netstat 都可以帮助定位端口占用问题。",
+                encoding="utf-8",
+            )
+
+            documents = load_documents_from_paths([file_path], config.data_dir)
+            nodes = create_nodes_from_documents(config, documents)
+            add_nodes_with_embeddings(config, nodes)
+
+            with connect_state_db(config) as connection:
+                connection.execute("DROP TABLE IF EXISTS local_chunks_fts")
+                connection.commit()
+
+            chunks = search_local_index_chunks(
+                config,
+                "端口占用",
+                access_filter=KnowledgeAccessFilter(),
+            )
+
+            self.assertTrue(chunks)
+            self.assertIn("linux", chunks[0]["file_name"].lower())
+
+
+class CapabilityRegistryTests(unittest.TestCase):
+    def test_assembler_exposes_builtin_capabilities_without_duplication(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = make_config(Path(temp_dir))
+            assembler = CapabilityAssembler(config)
+            context = CapabilityContext(
+                request_id="req-capabilities",
+                tenant_id="t1",
+                user_id="u1",
+                project_id="p1",
+                session_id="s1",
+                invocation_source="api",
+            )
+
+            assembly = assembler.assemble(context)
+
+            self.assertIn("kb.retrieve", assembly.tools)
+            self.assertIn("kb.rebuild", assembly.commands)
+            self.assertIn("kb.document_preview", assembly.resources)
+
+    def test_model_context_hides_non_model_rebuild_command(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = make_config(Path(temp_dir))
+            assembler = CapabilityAssembler(config)
+            model_context = CapabilityContext(
+                request_id="req-model",
+                tenant_id="t1",
+                user_id="u1",
+                project_id="p1",
+                session_id="s1",
+                invocation_source="model",
+            )
+
+            assembly = assembler.assemble(model_context)
+
+            self.assertIn("kb.retrieve", assembly.tools)
+            self.assertNotIn("kb.rebuild", assembly.commands)
+            with self.assertRaises(CapabilityAccessError):
+                assembler.require_command("kb.rebuild", model_context)
+
+    def test_assembler_applies_descriptor_metadata_visibility_rules(self):
+        class ScopedTool(BaseTool):
+            descriptor = CapabilityDescriptor(
+                name="test.scoped",
+                capability_type="tool",
+                display_name="Scoped Tool",
+                description="Tool visible only for one scoped capability context.",
+                metadata={
+                    "allowed_tenant_ids": ("t1",),
+                    "allowed_department_ids": ("qa",),
+                    "allowed_scenes": ("troubleshooting",),
+                    "required_context_metadata": {
+                        "connector_enabled": True,
+                        "access_tier": ("internal", "admin"),
+                    },
+                },
+            )
+
+            def execute(self, payload, context):
+                return {"ok": True}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = make_config(Path(temp_dir))
+            registry = CapabilityRegistry()
+            registry.register(ScopedTool.descriptor, lambda runtime_config: ScopedTool(runtime_config))
+            assembler = CapabilityAssembler(config, registry=registry)
+
+            allowed_context = CapabilityContext(
+                request_id="req-scoped-allowed",
+                tenant_id="t1",
+                user_id="u1",
+                project_id="p1",
+                session_id="s1",
+                department_id="qa",
+                scene="troubleshooting",
+                invocation_source="api",
+                metadata={"connector_enabled": True, "access_tier": "internal"},
+            )
+            hidden_context = CapabilityContext(
+                request_id="req-scoped-hidden",
+                tenant_id="t1",
+                user_id="u1",
+                project_id="p1",
+                session_id="s1",
+                department_id="ops",
+                scene="troubleshooting",
+                invocation_source="api",
+                metadata={"connector_enabled": True, "access_tier": "internal"},
+            )
+
+            self.assertIn("test.scoped", assembler.assemble(allowed_context).tools)
+            self.assertNotIn("test.scoped", assembler.assemble(hidden_context).tools)
+            with self.assertRaises(CapabilityAccessError):
+                assembler.require_tool("test.scoped", hidden_context)
+
+    @patch("app.services.capabilities.builtin.rag_query_tool.retrieve_chunks")
+    def test_retrieve_tool_delegates_to_existing_retrieval_service(self, mock_retrieve_chunks):
+        mock_retrieve_chunks.return_value = ([], "rewritten query", "")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = make_config(Path(temp_dir))
+            assembler = CapabilityAssembler(config)
+            context = CapabilityContext(
+                request_id="req-retrieve",
+                tenant_id="t1",
+                user_id="u1",
+                project_id="p1",
+                session_id="s1",
+                invocation_source="system",
+            )
+
+            tool = assembler.require_tool("kb.retrieve", context)
+            result = tool.execute(
+                {
+                    "question": "pytest 怎么跑单个测试？",
+                    "top_k": 3,
+                    "chat_history": [{"role": "user", "content": "pytest 命令"}],
+                },
+                context,
+            )
+
+            self.assertEqual(result, ([], "rewritten query", ""))
+            mock_retrieve_chunks.assert_called_once_with(
+                question="pytest 怎么跑单个测试？",
+                config=config,
+                top_k=3,
+                chat_history=[{"role": "user", "content": "pytest 命令"}],
+                access_filter=KnowledgeAccessFilter(
+                    tenant_id="t1",
+                    user_id="u1",
+                    department_id="",
+                    allow_public=True,
+                ),
+            )
+
+    @patch("app.services.capabilities.builtin.kb_rebuild_command.start_rebuild_job")
+    def test_rebuild_command_delegates_to_existing_job_service(self, mock_start_rebuild_job):
+        mock_start_rebuild_job.return_value = KnowledgeBaseJob(
+            job_id="job-capability",
+            status="queued",
+            mode="sync",
+            stage="queued",
+            progress=0.0,
+            message="queued",
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = make_config(Path(temp_dir))
+            assembler = CapabilityAssembler(config)
+            context = CapabilityContext(
+                request_id="req-rebuild",
+                tenant_id="t1",
+                user_id="u1",
+                project_id="p1",
+                session_id="s1",
+                invocation_source="api",
+            )
+
+            command = assembler.require_command("kb.rebuild", context)
+            job = command.invoke({"mode": "scan"}, context)
+
+            self.assertEqual(job.job_id, "job-capability")
+            mock_start_rebuild_job.assert_called_once_with(config, mode="scan")
+
 
 class KnowledgeBaseJobTests(unittest.TestCase):
+    @patch(
+        "app.services.knowledge_base_job_service.persist_materialized_document",
+        return_value={
+            "version_id": "version-1",
+            "file_type": "md",
+            "parser_name": "plain_text_reader",
+            "segment_count": 1,
+            "page_count": 0,
+            "sheet_count": 0,
+            "title": "",
+            "source_url": "",
+            "resolved_url": "",
+        },
+    )
     @patch("app.services.knowledge_base_job_service.get_collection_count", return_value=2)
     @patch("app.services.knowledge_base_job_service.add_nodes_with_embeddings", return_value=2)
     @patch("app.services.knowledge_base_job_service.create_nodes_from_documents")
-    @patch("app.services.knowledge_base_job_service.load_documents_from_paths")
-    @patch("app.services.knowledge_base_job_service.delete_document_chunks")
+    @patch("app.services.knowledge_base_job_service.build_llama_documents_from_parsed_documents")
+    @patch("app.services.knowledge_base_job_service.load_parsed_documents_from_paths")
+    @patch("app.services.knowledge_base_job_service.delete_retrieval_document_chunks")
     def test_start_rebuild_job_updates_catalog_status(
         self,
-        mock_delete_document_chunks,
-        mock_load_documents_from_paths,
+        mock_delete_retrieval_document_chunks,
+        mock_load_parsed_documents_from_paths,
+        mock_build_llama_documents_from_parsed_documents,
         mock_create_nodes_from_documents,
         mock_add_nodes_with_embeddings,
         mock_get_collection_count,
+        mock_persist_materialized_document,
     ):
         with tempfile.TemporaryDirectory() as temp_dir:
             config = make_config(Path(temp_dir))
             config.data_dir.mkdir(parents=True, exist_ok=True)
-            (config.data_dir / "01_python_testing.md").write_text("python", encoding="utf-8")
+            source_path = config.data_dir / "01_python_testing.md"
+            source_path.write_text("python", encoding="utf-8")
 
-            mock_load_documents_from_paths.return_value = [SimpleNamespace()]
+            mock_load_parsed_documents_from_paths.return_value = [
+                ParsedDocument(
+                    source_id="source-1",
+                    source_path=str(source_path.resolve(strict=False)),
+                    relative_path="01_python_testing.md",
+                    file_name="01_python_testing.md",
+                    file_type="md",
+                    parser_name="plain_text_reader",
+                    content_markdown="# Python",
+                    content_json={"file_type": "md", "parser_name": "plain_text_reader"},
+                    segments=[
+                        ExtractedSegment(
+                            segment_id="seg-1",
+                            sequence=1,
+                            content_text="python",
+                            content_markdown="# Python",
+                        )
+                    ],
+                )
+            ]
+            mock_build_llama_documents_from_parsed_documents.return_value = [SimpleNamespace()]
             mock_create_nodes_from_documents.return_value = [SimpleNamespace(), SimpleNamespace()]
 
             job = start_rebuild_job(config)
@@ -412,19 +1425,38 @@ class KnowledgeBaseJobTests(unittest.TestCase):
             documents = list_document_catalog(config)
             self.assertEqual(documents[0].status, "indexed")
             self.assertEqual(documents[0].chunk_count, 2)
+            self.assertEqual(documents[0].active_version_id, "version-1")
             self.assertTrue(mock_add_nodes_with_embeddings.called)
+            self.assertTrue(mock_persist_materialized_document.called)
             self.assertTrue((config.db_dir / "knowledge_base_jobs.json").exists())
 
+    @patch(
+        "app.services.knowledge_base_job_service.persist_materialized_document",
+        return_value={
+            "version_id": "version-2",
+            "file_type": "md",
+            "parser_name": "plain_text_reader",
+            "segment_count": 1,
+            "page_count": 0,
+            "sheet_count": 0,
+            "title": "",
+            "source_url": "",
+            "resolved_url": "",
+        },
+    )
     @patch("app.services.knowledge_base_job_service.get_collection_count", return_value=0)
     @patch("app.services.knowledge_base_job_service.add_nodes_with_embeddings", return_value=1)
     @patch("app.services.knowledge_base_job_service.create_nodes_from_documents")
-    @patch("app.services.knowledge_base_job_service.load_documents_from_paths")
+    @patch("app.services.knowledge_base_job_service.build_llama_documents_from_parsed_documents")
+    @patch("app.services.knowledge_base_job_service.load_parsed_documents_from_paths")
     def test_scan_mode_discovers_external_files_but_sync_mode_does_not(
         self,
-        mock_load_documents_from_paths,
+        mock_load_parsed_documents_from_paths,
+        mock_build_llama_documents_from_parsed_documents,
         mock_create_nodes_from_documents,
         mock_add_nodes_with_embeddings,
         mock_get_collection_count,
+        mock_persist_materialized_document,
     ):
         with tempfile.TemporaryDirectory() as temp_dir:
             config = make_config(Path(temp_dir))
@@ -445,7 +1477,27 @@ class KnowledgeBaseJobTests(unittest.TestCase):
             )
             second_path.write_text("linux", encoding="utf-8")
 
-            mock_load_documents_from_paths.return_value = [SimpleNamespace()]
+            mock_load_parsed_documents_from_paths.return_value = [
+                ParsedDocument(
+                    source_id="source-2",
+                    source_path=str(second_path.resolve(strict=False)),
+                    relative_path="02_linux_commands.md",
+                    file_name="02_linux_commands.md",
+                    file_type="md",
+                    parser_name="plain_text_reader",
+                    content_markdown="# Linux",
+                    content_json={"file_type": "md", "parser_name": "plain_text_reader"},
+                    segments=[
+                        ExtractedSegment(
+                            segment_id="seg-2",
+                            sequence=1,
+                            content_text="linux",
+                            content_markdown="# Linux",
+                        )
+                    ],
+                )
+            ]
+            mock_build_llama_documents_from_parsed_documents.return_value = [SimpleNamespace()]
             mock_create_nodes_from_documents.return_value = [SimpleNamespace()]
 
             sync_job = start_rebuild_job(config, mode="sync")
@@ -475,14 +1527,36 @@ class KnowledgeBaseJobTests(unittest.TestCase):
             self.assertEqual(latest_scan_job.mode, "scan")
             self.assertEqual(len(list_document_catalog(config)), 2)
             self.assertTrue(mock_add_nodes_with_embeddings.called)
+            self.assertTrue(mock_persist_materialized_document.called)
 
 
 class OfflineAnswerTests(unittest.TestCase):
+    def test_build_citations_include_chunk_and_page_metadata(self):
+        citations = build_citations(
+            [
+                RetrievedChunk(
+                    document_id="doc-pdf",
+                    file_name="guide.pdf",
+                    source_path="guide.pdf",
+                    relative_path="guide.pdf",
+                    text="Deployment checklist on page 3.",
+                    score=0.91,
+                    vector_score=0.91,
+                    chunk_id="chunk-123",
+                    page_number=3,
+                    source_type="pdf",
+                )
+            ]
+        )
+
+        self.assertEqual(citations[0].chunk_id, "chunk-123")
+        self.assertEqual(citations[0].page_number, 3)
+
     def test_answer_with_rag_falls_back_to_local_extractive_mode(self):
         config = make_config(Path(tempfile.mkdtemp()), llm_api_key="", embedding_api_key="")
         try:
             with patch(
-                "app.services.rag_service.retrieve_chunks",
+                "app.services.capabilities.builtin.rag_query_tool.retrieve_chunks",
                 return_value=(
                     [
                         RetrievedChunk(
@@ -519,14 +1593,12 @@ class OfflineAnswerTests(unittest.TestCase):
                     relative_path="linux.md",
                     text="""### 查看端口占用
 所属章节：Linux 常用命令 / 进程与端口检查
-
 ```bash
 netstat -ano | grep 8080
 ss -lntp
 ```
 
-- 可以先确认目标端口是否已经被监听。
-""",
+- 可以先确认目标端口是否已经被监听。""",
                     score=0.91,
                     vector_score=0.91,
                 )
@@ -560,7 +1632,6 @@ class SettingsValidationTests(unittest.TestCase):
                 "NO_ANSWER_MIN_SCORE": "2",
                 "CHROMA_COLLECTION_NAME": "",
                 "LOG_LEVEL": "TRACE",
-                "API_PORT": "70000",
             }
         )
 
@@ -570,7 +1641,6 @@ class SettingsValidationTests(unittest.TestCase):
         self.assertIn("CHUNK_OVERLAP", errors)
         self.assertIn("NO_ANSWER_MIN_SCORE", errors)
         self.assertIn("LOG_LEVEL", errors)
-        self.assertIn("API_PORT", errors)
 
     def test_build_config_from_settings_values_merges_new_fields(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1800,3 +2870,6 @@ class SessionPersistenceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+

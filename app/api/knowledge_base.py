@@ -3,10 +3,17 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 
 from app.config import AppConfig
-from app.schemas import DocumentDeleteResult, DocumentRenameResult, DocumentSummary, KnowledgeBaseJob
+from app.schemas import (
+    DocumentDeleteResult,
+    DocumentPreviewPayload,
+    DocumentRenameResult,
+    DocumentSummary,
+    KnowledgeBaseJob,
+)
+from app.services.capabilities import CapabilityAssembler, CapabilityContext
+from app.services.capabilities.models import CapabilityInvocationSource
 from app.services.catalog_service import (
     get_document_by_id,
     get_documents_by_ids,
@@ -19,12 +26,11 @@ from app.services.catalog_service import (
 )
 from app.services.document_service import (
     delete_documents as delete_source_documents,
-    read_document_preview,
     rename_document as rename_source_document,
     save_raw_files,
     save_uploaded_files,
 )
-from app.services.knowledge_base_job_service import cancel_job, get_current_job, get_job, start_rebuild_job
+from app.services.knowledge_base_job_service import cancel_job, get_current_job, get_job
 from app.services.knowledge_base_service import delete_document_chunks, get_collection_count, index_exists
 
 logger = logging.getLogger(__name__)
@@ -49,12 +55,27 @@ def get_document_list(config: AppConfig) -> list[DocumentSummary]:
     return list_document_catalog(config)
 
 
-def get_document_preview(document_id: str, config: AppConfig, max_chars: int = 3000) -> str:
+def get_document_preview(
+    document_id: str,
+    config: AppConfig,
+    max_chars: int = 3000,
+) -> DocumentPreviewPayload:
     """Read a document preview by document ID."""
-    document = get_document_by_id(config, document_id)
-    if not document:
-        raise FileNotFoundError("Document does not exist or has been removed.")
-    return read_document_preview(Path(document.path), max_chars=max_chars)
+    capability_context = _build_management_capability_context(
+        request_id=f"preview:{document_id}",
+        invocation_source="api",
+        metadata={"document_id": document_id},
+    )
+    assembly = CapabilityAssembler(config).assemble(capability_context)
+    preview_resource = assembly.resources["kb.document_preview"]
+    return preview_resource.read(
+        {
+            "document_id": document_id,
+            "max_chars": max_chars,
+            "access_filter": assembly.access_filter,
+        },
+        capability_context,
+    )
 
 
 def delete_documents(document_ids: list[str], config: AppConfig) -> DocumentDeleteResult:
@@ -138,7 +159,14 @@ def get_chunk_count(config: AppConfig) -> int:
 
 def rebuild_knowledge_base(config: AppConfig, *, mode: str = "sync") -> KnowledgeBaseJob:
     """Start an asynchronous knowledge-base job."""
-    return start_rebuild_job(config, mode=mode)
+    capability_context = _build_management_capability_context(
+        request_id=f"kb-rebuild:{mode}",
+        invocation_source="api",
+        metadata={"mode": mode},
+    )
+    assembly = CapabilityAssembler(config).assemble(capability_context)
+    rebuild_command = assembly.commands["kb.rebuild"]
+    return rebuild_command.invoke({"mode": mode}, capability_context)
 
 
 def get_current_rebuild_job(config: AppConfig) -> KnowledgeBaseJob | None:
@@ -154,3 +182,21 @@ def get_rebuild_job(config: AppConfig, job_id: str) -> KnowledgeBaseJob | None:
 def cancel_rebuild_job(config: AppConfig, job_id: str) -> KnowledgeBaseJob | None:
     """Cancel a running knowledge-base job."""
     return cancel_job(config, job_id)
+
+
+def _build_management_capability_context(
+    *,
+    request_id: str,
+    invocation_source: CapabilityInvocationSource,
+    metadata: dict[str, object] | None = None,
+) -> CapabilityContext:
+    """Build a lightweight capability context for knowledge-base management APIs."""
+    return CapabilityContext(
+        request_id=request_id,
+        tenant_id="local_tenant",
+        user_id="system",
+        project_id="aurora",
+        session_id="system:knowledge-base",
+        invocation_source=invocation_source,
+        metadata=dict(metadata or {}),
+    )

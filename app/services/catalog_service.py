@@ -136,6 +136,15 @@ def update_document_annotations(
                     indexed_hash = '',
                     last_processed_hash = '',
                     chunk_count = 0,
+                    active_version_id = '',
+                    file_type = '',
+                    parser_name = '',
+                    segment_count = 0,
+                    page_count = 0,
+                    sheet_count = 0,
+                    title = '',
+                    source_url = '',
+                    resolved_url = '',
                     last_indexed_at = '',
                     last_error = '',
                     status = 'pending',
@@ -273,6 +282,15 @@ def mark_documents_indexed(
                 SET indexed_hash = ?,
                     last_processed_hash = ?,
                     chunk_count = ?,
+                    active_version_id = ?,
+                    file_type = ?,
+                    parser_name = ?,
+                    segment_count = ?,
+                    page_count = ?,
+                    sheet_count = ?,
+                    title = ?,
+                    source_url = ?,
+                    resolved_url = ?,
                     last_indexed_at = ?,
                     last_error = '',
                     status = 'indexed',
@@ -283,6 +301,15 @@ def mark_documents_indexed(
                     content_hash,
                     content_hash,
                     int(payload.get("chunk_count", 0) or 0),
+                    str(payload.get("version_id", "") or ""),
+                    str(payload.get("file_type", "") or ""),
+                    str(payload.get("parser_name", "") or ""),
+                    int(payload.get("segment_count", 0) or 0),
+                    int(payload.get("page_count", 0) or 0),
+                    int(payload.get("sheet_count", 0) or 0),
+                    str(payload.get("title", "") or ""),
+                    str(payload.get("source_url", "") or ""),
+                    str(payload.get("resolved_url", "") or ""),
                     current_time,
                     current_time,
                     path,
@@ -358,6 +385,15 @@ def reset_document_tracking(config: AppConfig, paths: list[str]) -> None:
                 SET indexed_hash = '',
                     last_processed_hash = '',
                     chunk_count = 0,
+                    active_version_id = '',
+                    file_type = '',
+                    parser_name = '',
+                    segment_count = 0,
+                    page_count = 0,
+                    sheet_count = 0,
+                    title = '',
+                    source_url = '',
+                    resolved_url = '',
                     last_indexed_at = '',
                     last_error = '',
                     status = 'pending',
@@ -377,6 +413,15 @@ def reset_all_document_tracking(config: AppConfig) -> None:
             SET indexed_hash = '',
                 last_processed_hash = '',
                 chunk_count = 0,
+                active_version_id = '',
+                file_type = '',
+                parser_name = '',
+                segment_count = 0,
+                page_count = 0,
+                sheet_count = 0,
+                title = '',
+                source_url = '',
+                resolved_url = '',
                 last_indexed_at = '',
                 last_error = '',
                 status = 'pending',
@@ -468,6 +513,12 @@ def _migrate_legacy_catalog_if_needed(config: AppConfig, connection) -> None:
                         _normalize_tags(value.get("tags", [])),
                         ensure_ascii=False,
                     ),
+                    "tenant_id": str(value.get("tenant_id", "") or ""),
+                    "owner_user_id": str(
+                        value.get("owner_user_id") or value.get("user_id") or ""
+                    ),
+                    "department_id": str(value.get("department_id", "") or ""),
+                    "is_public": 1 if bool(value.get("is_public", True)) else 0,
                     "citation_count": int(value.get("citation_count", 0) or 0),
                     "chunk_count": int(value.get("chunk_count", 0) or 0),
                     "last_indexed_at": str(value.get("last_indexed_at", "") or ""),
@@ -525,6 +576,22 @@ def _build_document_row(
         else infer_document_category(item.name)
     )
     tags = _deserialize_tags(existing["tags_json"]) if existing else []
+    tenant_id = (
+        str(existing["tenant_id"] or "")
+        if existing is not None
+        else str(item.tenant_id or "")
+    )
+    owner_user_id = (
+        str(existing["owner_user_id"] or "")
+        if existing is not None
+        else str(item.owner_user_id or "")
+    )
+    department_id = (
+        str(existing["department_id"] or "")
+        if existing is not None
+        else str(item.department_id or "")
+    )
+    is_public = bool(int(existing["is_public"] or 0)) if existing is not None else bool(item.is_public)
     citation_count = int(existing["citation_count"] or 0) if existing else 0
     indexed_hash = "" if force_pending else (str(existing["indexed_hash"] or "") if existing else "")
     last_processed_hash = (
@@ -559,6 +626,10 @@ def _build_document_row(
         "last_processed_hash": last_processed_hash,
         "theme": theme,
         "tags_json": json.dumps(tags, ensure_ascii=False),
+        "tenant_id": tenant_id,
+        "owner_user_id": owner_user_id,
+        "department_id": department_id,
+        "is_public": 1 if is_public else 0,
         "citation_count": citation_count,
         "chunk_count": chunk_count,
         "last_indexed_at": last_indexed_at,
@@ -587,6 +658,10 @@ def _upsert_document_row(connection, row: dict[str, object]) -> None:
             last_processed_hash,
             theme,
             tags_json,
+            tenant_id,
+            owner_user_id,
+            department_id,
+            is_public,
             citation_count,
             chunk_count,
             last_indexed_at,
@@ -610,6 +685,10 @@ def _upsert_document_row(connection, row: dict[str, object]) -> None:
             :last_processed_hash,
             :theme,
             :tags_json,
+            :tenant_id,
+            :owner_user_id,
+            :department_id,
+            :is_public,
             :citation_count,
             :chunk_count,
             :last_indexed_at,
@@ -632,6 +711,10 @@ def _upsert_document_row(connection, row: dict[str, object]) -> None:
             last_processed_hash = excluded.last_processed_hash,
             theme = excluded.theme,
             tags_json = excluded.tags_json,
+            tenant_id = excluded.tenant_id,
+            owner_user_id = excluded.owner_user_id,
+            department_id = excluded.department_id,
+            is_public = excluded.is_public,
             citation_count = excluded.citation_count,
             chunk_count = excluded.chunk_count,
             last_indexed_at = excluded.last_indexed_at,
@@ -663,28 +746,49 @@ def _make_summary_from_path(file_path: Path, data_dir: Path) -> DocumentSummary:
         status="pending",
         theme="",
         tags=[],
+        is_public=True,
     )
 
 
 def _row_to_document_summary(row) -> DocumentSummary:
     return DocumentSummary(
-        document_id=str(row["document_id"] or ""),
-        name=str(row["name"] or ""),
-        path=str(row["path"] or ""),
-        relative_path=str(row["relative_path"] or ""),
-        extension=str(row["extension"] or ""),
-        size_bytes=int(row["size_bytes"] or 0),
-        updated_at=str(row["updated_at"] or ""),
-        status=str(row["status"] or "pending"),
-        theme=str(row["theme"] or ""),
-        tags=_deserialize_tags(row["tags_json"]),
-        content_hash=str(row["content_hash"] or ""),
-        indexed_hash=str(row["indexed_hash"] or ""),
-        chunk_count=int(row["chunk_count"] or 0),
-        citation_count=int(row["citation_count"] or 0),
-        last_indexed_at=str(row["last_indexed_at"] or ""),
-        last_error=str(row["last_error"] or ""),
+        document_id=str(_row_value(row, "document_id") or ""),
+        name=str(_row_value(row, "name") or ""),
+        path=str(_row_value(row, "path") or ""),
+        relative_path=str(_row_value(row, "relative_path") or ""),
+        extension=str(_row_value(row, "extension") or ""),
+        size_bytes=int(_row_value(row, "size_bytes", 0) or 0),
+        updated_at=str(_row_value(row, "updated_at") or ""),
+        status=str(_row_value(row, "status", "pending") or "pending"),
+        theme=str(_row_value(row, "theme") or ""),
+        tags=_deserialize_tags(_row_value(row, "tags_json", "[]")),
+        content_hash=str(_row_value(row, "content_hash") or ""),
+        indexed_hash=str(_row_value(row, "indexed_hash") or ""),
+        chunk_count=int(_row_value(row, "chunk_count", 0) or 0),
+        citation_count=int(_row_value(row, "citation_count", 0) or 0),
+        last_indexed_at=str(_row_value(row, "last_indexed_at") or ""),
+        last_error=str(_row_value(row, "last_error") or ""),
+        active_version_id=str(_row_value(row, "active_version_id") or ""),
+        file_type=str(_row_value(row, "file_type") or ""),
+        parser_name=str(_row_value(row, "parser_name") or ""),
+        segment_count=int(_row_value(row, "segment_count", 0) or 0),
+        page_count=int(_row_value(row, "page_count", 0) or 0),
+        sheet_count=int(_row_value(row, "sheet_count", 0) or 0),
+        title=str(_row_value(row, "title") or ""),
+        source_url=str(_row_value(row, "source_url") or ""),
+        resolved_url=str(_row_value(row, "resolved_url") or ""),
+        tenant_id=str(_row_value(row, "tenant_id") or ""),
+        owner_user_id=str(_row_value(row, "owner_user_id") or ""),
+        department_id=str(_row_value(row, "department_id") or ""),
+        is_public=bool(int(_row_value(row, "is_public", 1) or 0)),
     )
+
+
+def _row_value(row, key: str, default: object = "") -> object:
+    try:
+        return row[key]
+    except (KeyError, IndexError, TypeError):
+        return default
 
 
 def _deserialize_tags(raw_tags: object) -> list[str]:

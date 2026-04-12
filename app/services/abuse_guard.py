@@ -35,6 +35,31 @@ class AbuseGuard:
         "memory_lifecycle": {
             "tenant": (12, 300),
         },
+        "chat_request": {
+            "user": (60, 60),
+            "session": (90, 60),
+            "tenant": (600, 60),
+        },
+        "document_upload": {
+            "user": (12, 300),
+            "tenant": (100, 300),
+        },
+        "knowledge_rebuild": {
+            "user": (6, 300),
+            "tenant": (30, 300),
+        },
+        "provider_dry_run": {
+            "user": (12, 300),
+            "tenant": (60, 300),
+        },
+        "log_read": {
+            "user": (30, 60),
+            "tenant": (240, 60),
+        },
+        "log_clear": {
+            "user": (5, 300),
+            "tenant": (20, 300),
+        },
     }
     _LOCK = threading.Lock()
     _EVENTS: dict[tuple[str, str, str], deque[float]] = defaultdict(deque)

@@ -222,6 +222,10 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
             last_processed_hash TEXT NOT NULL DEFAULT '',
             theme TEXT NOT NULL DEFAULT '',
             tags_json TEXT NOT NULL DEFAULT '[]',
+            tenant_id TEXT NOT NULL DEFAULT '',
+            owner_user_id TEXT NOT NULL DEFAULT '',
+            department_id TEXT NOT NULL DEFAULT '',
+            is_public INTEGER NOT NULL DEFAULT 1,
             citation_count INTEGER NOT NULL DEFAULT 0,
             chunk_count INTEGER NOT NULL DEFAULT 0,
             last_indexed_at TEXT NOT NULL DEFAULT '',
@@ -234,7 +238,98 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_documents_name ON documents(name);
         CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status);
         CREATE INDEX IF NOT EXISTS idx_documents_updated_at ON documents(updated_at);
+        CREATE TABLE IF NOT EXISTS app_runtime_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL DEFAULT '',
+            updated_by TEXT NOT NULL DEFAULT ''
+        );
 
+        CREATE TABLE IF NOT EXISTS document_versions (
+            version_id TEXT PRIMARY KEY,
+            document_id TEXT NOT NULL,
+            source_document_id TEXT NOT NULL DEFAULT '',
+            source_path TEXT NOT NULL DEFAULT '',
+            relative_path TEXT NOT NULL DEFAULT '',
+            file_name TEXT NOT NULL DEFAULT '',
+            content_hash TEXT NOT NULL DEFAULT '',
+            file_type TEXT NOT NULL DEFAULT '',
+            parser_name TEXT NOT NULL DEFAULT '',
+            segment_count INTEGER NOT NULL DEFAULT 0,
+            page_count INTEGER NOT NULL DEFAULT 0,
+            sheet_count INTEGER NOT NULL DEFAULT 0,
+            title TEXT NOT NULL DEFAULT '',
+            source_url TEXT NOT NULL DEFAULT '',
+            resolved_url TEXT NOT NULL DEFAULT '',
+            tenant_id TEXT NOT NULL DEFAULT '',
+            owner_user_id TEXT NOT NULL DEFAULT '',
+            department_id TEXT NOT NULL DEFAULT '',
+            is_public INTEGER NOT NULL DEFAULT 1,
+            manifest_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT '',
+            FOREIGN KEY (document_id) REFERENCES documents(document_id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_document_versions_document_id
+            ON document_versions(document_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_document_versions_source_path
+            ON document_versions(source_path, created_at DESC);
+        CREATE TABLE IF NOT EXISTS document_segments (
+            segment_id TEXT PRIMARY KEY,
+            version_id TEXT NOT NULL,
+            document_id TEXT NOT NULL,
+            sequence INTEGER NOT NULL DEFAULT 0,
+            segment_kind TEXT NOT NULL DEFAULT '',
+            page_number INTEGER DEFAULT NULL,
+            sheet_name TEXT NOT NULL DEFAULT '',
+            content_text TEXT NOT NULL DEFAULT '',
+            content_markdown TEXT NOT NULL DEFAULT '',
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT '',
+            FOREIGN KEY (version_id) REFERENCES document_versions(version_id) ON DELETE CASCADE,
+            FOREIGN KEY (document_id) REFERENCES documents(document_id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_document_segments_version_sequence
+            ON document_segments(version_id, sequence);
+        CREATE INDEX IF NOT EXISTS idx_document_segments_document_id
+            ON document_segments(document_id, sequence);
+
+        CREATE TABLE IF NOT EXISTS document_chunks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chunk_id TEXT NOT NULL DEFAULT '',
+            version_id TEXT NOT NULL,
+            document_id TEXT NOT NULL,
+            segment_id TEXT DEFAULT NULL,
+            source_path TEXT NOT NULL DEFAULT '',
+            file_name TEXT NOT NULL DEFAULT '',
+            relative_path TEXT NOT NULL DEFAULT '',
+            text TEXT NOT NULL DEFAULT '',
+            theme TEXT NOT NULL DEFAULT '',
+            tags_json TEXT NOT NULL DEFAULT '[]',
+            tags_text TEXT NOT NULL DEFAULT '',
+            page_number INTEGER DEFAULT NULL,
+            sheet_name TEXT NOT NULL DEFAULT '',
+            parser_name TEXT NOT NULL DEFAULT '',
+            source_type TEXT NOT NULL DEFAULT '',
+            tenant_id TEXT NOT NULL DEFAULT '',
+            owner_user_id TEXT NOT NULL DEFAULT '',
+            department_id TEXT NOT NULL DEFAULT '',
+            is_public INTEGER NOT NULL DEFAULT 1,
+            position INTEGER NOT NULL DEFAULT 0,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT '',
+            FOREIGN KEY (version_id) REFERENCES document_versions(version_id) ON DELETE CASCADE,
+            FOREIGN KEY (document_id) REFERENCES documents(document_id) ON DELETE CASCADE,
+            FOREIGN KEY (segment_id) REFERENCES document_segments(segment_id) ON DELETE SET NULL
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_document_chunks_version_chunk
+            ON document_chunks(version_id, chunk_id);
+        CREATE INDEX IF NOT EXISTS idx_document_chunks_document_id
+            ON document_chunks(document_id, position);
+        CREATE INDEX IF NOT EXISTS idx_document_chunks_source_path
+            ON document_chunks(source_path, position);
         CREATE TABLE IF NOT EXISTS local_chunks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             external_chunk_id TEXT NOT NULL DEFAULT '',
@@ -246,12 +341,15 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
             theme TEXT NOT NULL DEFAULT '',
             tags_json TEXT NOT NULL DEFAULT '[]',
             tags_text TEXT NOT NULL DEFAULT '',
+            tenant_id TEXT NOT NULL DEFAULT '',
+            owner_user_id TEXT NOT NULL DEFAULT '',
+            department_id TEXT NOT NULL DEFAULT '',
+            is_public INTEGER NOT NULL DEFAULT 1,
             position INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE INDEX IF NOT EXISTS idx_local_chunks_source_path ON local_chunks(source_path);
         CREATE INDEX IF NOT EXISTS idx_local_chunks_document_id ON local_chunks(document_id);
-
         CREATE TABLE IF NOT EXISTS chat_sessions (
             id TEXT PRIMARY KEY,
             tenant_id TEXT NOT NULL,
@@ -458,6 +556,30 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_policy_decisions_policy
             ON policy_decisions(policy_name, decision, created_at DESC);
 
+        CREATE TABLE IF NOT EXISTS application_audit_events (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            actor_user_id TEXT NOT NULL,
+            actor_role TEXT NOT NULL DEFAULT '',
+            team_id TEXT NOT NULL DEFAULT '',
+            project_id TEXT NOT NULL DEFAULT '',
+            request_id TEXT NOT NULL DEFAULT '',
+            session_id TEXT NOT NULL DEFAULT '',
+            action TEXT NOT NULL DEFAULT '',
+            target_type TEXT NOT NULL DEFAULT '',
+            target_id TEXT NOT NULL DEFAULT '',
+            outcome TEXT NOT NULL DEFAULT '',
+            details_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_application_audit_events_created
+            ON application_audit_events(tenant_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_application_audit_events_action
+            ON application_audit_events(tenant_id, action, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_application_audit_events_actor
+            ON application_audit_events(tenant_id, actor_user_id, created_at DESC);
+
         CREATE TABLE IF NOT EXISTS system_metrics_snapshot (
             id TEXT PRIMARY KEY,
             metric_name TEXT NOT NULL,
@@ -470,6 +592,8 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
             ON system_metrics_snapshot(metric_name, captured_at DESC);
         """
     )
+    _ensure_local_chunk_schema(connection)
+    _ensure_document_materialization_schema(connection)
     _ensure_memory_fact_schema(connection)
     _ensure_memory_access_audit_schema(connection)
     _ensure_memory_fact_indexes(connection)
@@ -492,6 +616,72 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
         except sqlite3.OperationalError:
             # FTS5 might be unavailable in some Python/SQLite builds.
             pass
+
+
+def _ensure_local_chunk_schema(connection: sqlite3.Connection) -> None:
+    if not table_exists(connection, "local_chunks"):
+        return
+
+    _ensure_column(connection, "local_chunks", "page_number", "INTEGER DEFAULT NULL")
+    _ensure_column(connection, "local_chunks", "parser_name", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(connection, "local_chunks", "source_type", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(connection, "local_chunks", "tenant_id", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(connection, "local_chunks", "owner_user_id", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(connection, "local_chunks", "department_id", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(connection, "local_chunks", "is_public", "INTEGER NOT NULL DEFAULT 1")
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_local_chunks_access
+            ON local_chunks(tenant_id, owner_user_id, department_id, is_public, document_id, position)
+        """
+    )
+
+
+def _ensure_document_materialization_schema(connection: sqlite3.Connection) -> None:
+    if not table_exists(connection, "documents"):
+        return
+
+    _ensure_column(connection, "documents", "active_version_id", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(connection, "documents", "file_type", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(connection, "documents", "parser_name", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(connection, "documents", "segment_count", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(connection, "documents", "page_count", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(connection, "documents", "sheet_count", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(connection, "documents", "title", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(connection, "documents", "source_url", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(connection, "documents", "resolved_url", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(connection, "documents", "tenant_id", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(connection, "documents", "owner_user_id", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(connection, "documents", "department_id", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(connection, "documents", "is_public", "INTEGER NOT NULL DEFAULT 1")
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_documents_access
+            ON documents(tenant_id, owner_user_id, department_id, is_public, status)
+        """
+    )
+    if table_exists(connection, "document_versions"):
+        _ensure_column(connection, "document_versions", "tenant_id", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(connection, "document_versions", "owner_user_id", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(connection, "document_versions", "department_id", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(connection, "document_versions", "is_public", "INTEGER NOT NULL DEFAULT 1")
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_document_versions_access
+                ON document_versions(tenant_id, owner_user_id, department_id, is_public, document_id)
+            """
+        )
+    if table_exists(connection, "document_chunks"):
+        _ensure_column(connection, "document_chunks", "tenant_id", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(connection, "document_chunks", "owner_user_id", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(connection, "document_chunks", "department_id", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(connection, "document_chunks", "is_public", "INTEGER NOT NULL DEFAULT 1")
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_document_chunks_access
+                ON document_chunks(tenant_id, owner_user_id, department_id, is_public, document_id, position)
+            """
+        )
 
 
 def _ensure_memory_fact_schema(connection: sqlite3.Connection) -> None:

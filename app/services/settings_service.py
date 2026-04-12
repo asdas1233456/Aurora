@@ -1,12 +1,9 @@
-"""应用配置读写服务。"""
+"""Application settings read/write service for shared deployment."""
 
 from __future__ import annotations
 
 from dataclasses import replace
 import logging
-from pathlib import Path
-
-from dotenv import dotenv_values, set_key
 
 from app.config import (
     AppConfig,
@@ -16,20 +13,20 @@ from app.config import (
     is_openai_provider,
 )
 from app.schemas import AppSettings
+from app.services.persistence_utils import utc_now_iso
+from app.services.storage_service import connect_state_db
 
 
 logger = logging.getLogger(__name__)
 
-EDITABLE_ENV_KEYS = {
+EDITABLE_SETTINGS_KEYS = {
     "LLM_PROVIDER",
     "EMBEDDING_PROVIDER",
-    "LLM_API_KEY",
     "LLM_API_BASE",
     "LLM_MODEL",
     "LLM_TEMPERATURE",
     "LLM_TIMEOUT",
     "LLM_MAX_TOKENS",
-    "EMBEDDING_API_KEY",
     "EMBEDDING_API_BASE",
     "EMBEDDING_MODEL",
     "CHUNK_SIZE",
@@ -39,9 +36,15 @@ EDITABLE_ENV_KEYS = {
     "NO_ANSWER_MIN_SCORE",
     "CHROMA_COLLECTION_NAME",
     "LOG_LEVEL",
+}
+OPERATIONS_MANAGED_KEYS = {
+    "LLM_API_KEY",
+    "EMBEDDING_API_KEY",
     "API_HOST",
     "API_PORT",
     "CORS_ORIGINS",
+    "AUTH_MODE",
+    "TENANT_ID",
 }
 
 VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR"}
@@ -49,44 +52,33 @@ VALID_PROVIDERS = SUPPORTED_MODEL_PROVIDERS
 
 
 class SettingsValidationError(ValueError):
-    """配置校验失败。"""
+    """Raised when persisted settings fail validation."""
 
     def __init__(self, errors: dict[str, str]) -> None:
         self.errors = errors
-        super().__init__("配置校验失败")
+        super().__init__("Settings validation failed")
 
 
-def _get_env_path(config: AppConfig) -> Path:
-    return config.base_dir / ".env"
+class ManagedSettingUpdateError(ValueError):
+    """Raised when UI callers attempt to modify operations-managed settings."""
 
-
-def ensure_env_file(config: AppConfig) -> Path:
-    """确保 .env 文件存在。"""
-    env_path = _get_env_path(config)
-    if env_path.exists():
-        return env_path
-
-    example_path = config.base_dir / ".env.example"
-    if example_path.exists():
-        env_path.write_text(example_path.read_text(encoding="utf-8"), encoding="utf-8")
-    else:
-        env_path.write_text("", encoding="utf-8")
-    return env_path
+    def __init__(self, keys: list[str]) -> None:
+        self.keys = sorted(set(str(key).strip() for key in keys if str(key).strip()))
+        super().__init__("Operations-managed settings cannot be modified here")
 
 
 def load_app_settings(config: AppConfig) -> AppSettings:
-    """读取当前可编辑配置。"""
-    ensure_env_file(config)
+    """Return the editable settings view, excluding operations-managed secrets."""
     return AppSettings(
         llm_provider=config.llm_provider,
         embedding_provider=config.embedding_provider,
-        llm_api_key=config.llm_api_key,
+        llm_api_key="",
         llm_api_base=config.llm_api_base,
         llm_model=config.llm_model,
         llm_temperature=config.llm_temperature,
         llm_timeout=config.llm_timeout,
         llm_max_tokens=config.llm_max_tokens,
-        embedding_api_key=config.embedding_api_key,
+        embedding_api_key="",
         embedding_api_base=config.embedding_api_base,
         embedding_model=config.embedding_model,
         chunk_size=config.chunk_size,
@@ -102,19 +94,31 @@ def load_app_settings(config: AppConfig) -> AppSettings:
     )
 
 
-def load_raw_env_values(config: AppConfig) -> dict[str, str]:
-    """返回 .env 文件中的原始键值。"""
-    env_path = ensure_env_file(config)
-    raw_values = dotenv_values(env_path)
-    return {
-        key: str(value or "")
-        for key, value in raw_values.items()
-        if key in EDITABLE_ENV_KEYS
-    }
+def load_runtime_setting_values(config: AppConfig) -> dict[str, str]:
+    """Load persisted non-sensitive settings from the application state database."""
+    with connect_state_db(config) as connection:
+        rows = connection.execute(
+            """
+            SELECT key, value
+            FROM app_runtime_settings
+            WHERE key IN ({placeholders})
+            ORDER BY key ASC
+            """.format(placeholders=", ".join("?" for _ in EDITABLE_SETTINGS_KEYS)),
+            tuple(sorted(EDITABLE_SETTINGS_KEYS)),
+        ).fetchall()
+    return {str(row["key"]): str(row["value"] or "") for row in rows}
+
+
+def apply_runtime_settings_overrides(config: AppConfig) -> AppConfig:
+    """Overlay persisted runtime settings on top of env-derived config."""
+    persisted = load_runtime_setting_values(config)
+    if not persisted:
+        return config
+    return build_config_from_settings_values(config, persisted)
 
 
 def merge_settings_with_current(config: AppConfig, values: dict[str, object]) -> dict[str, str]:
-    """把页面提交值与当前配置合并成完整配置视图。"""
+    """Merge a partial update with the current effective settings view."""
     merged_values = {
         "LLM_PROVIDER": config.llm_provider,
         "EMBEDDING_PROVIDER": config.embedding_provider,
@@ -140,7 +144,7 @@ def merge_settings_with_current(config: AppConfig, values: dict[str, object]) ->
     }
 
     for key, value in values.items():
-        if key not in EDITABLE_ENV_KEYS:
+        if key not in EDITABLE_SETTINGS_KEYS:
             continue
         text_value = str(value).strip()
         if key in {"LLM_PROVIDER", "EMBEDDING_PROVIDER"}:
@@ -152,7 +156,7 @@ def merge_settings_with_current(config: AppConfig, values: dict[str, object]) ->
 
 
 def build_config_from_settings_values(config: AppConfig, values: dict[str, object]) -> AppConfig:
-    """基于页面值生成一份临时配置对象。"""
+    """Build a temporary effective config using current secrets plus pending changes."""
     merged = merge_settings_with_current(config, values)
     return replace(
         config,
@@ -174,38 +178,65 @@ def build_config_from_settings_values(config: AppConfig, values: dict[str, objec
         no_answer_min_score=float(merged["NO_ANSWER_MIN_SCORE"] or config.no_answer_min_score),
         collection_name=merged["CHROMA_COLLECTION_NAME"],
         log_level=merged["LOG_LEVEL"],
-        api_host=merged["API_HOST"],
-        api_port=int(merged["API_PORT"] or config.api_port),
-        cors_origins=merged["CORS_ORIGINS"],
     )
 
 
-def save_app_settings(config: AppConfig, values: dict[str, object]) -> None:
-    """把页面提交的配置写回 .env 文件。"""
-    env_path = ensure_env_file(config)
+def save_app_settings(
+    config: AppConfig,
+    values: dict[str, object],
+    *,
+    actor_user_id: str = "system",
+) -> None:
+    """Persist non-sensitive runtime settings into the state database."""
+    ensure_editable_settings_only(values)
     merged_values = merge_settings_with_current(config, values)
     errors = validate_app_settings(merged_values)
     if errors:
         raise SettingsValidationError(errors)
 
-    for key, value in values.items():
-        if key not in EDITABLE_ENV_KEYS:
-            continue
-        normalized_value = str(value).strip()
-        if key in {"LLM_PROVIDER", "EMBEDDING_PROVIDER"}:
-            normalized_value = _normalize_provider(normalized_value)
-        set_key(
-            str(env_path),
-            key,
-            normalized_value,
-            quote_mode="never",
+    persisted_values = {
+        key: merged_values[key]
+        for key in EDITABLE_SETTINGS_KEYS
+        if key in merged_values
+    }
+    updated_at = utc_now_iso()
+
+    with connect_state_db(config) as connection:
+        connection.executemany(
+            """
+            INSERT INTO app_runtime_settings (key, value, updated_at, updated_by)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = excluded.updated_at,
+                updated_by = excluded.updated_by
+            """,
+            [
+                (
+                    key,
+                    persisted_values[key],
+                    updated_at,
+                    actor_user_id,
+                )
+                for key in sorted(persisted_values)
+            ],
         )
 
-    logger.info("配置已写入 .env 文件: %s", env_path)
+    logger.info("Persisted %s non-sensitive runtime settings.", len(persisted_values))
+
+
+def ensure_editable_settings_only(values: dict[str, object]) -> None:
+    managed_keys = [
+        str(key).strip()
+        for key in values
+        if str(key).strip() in OPERATIONS_MANAGED_KEYS
+    ]
+    if managed_keys:
+        raise ManagedSettingUpdateError(managed_keys)
 
 
 def mask_secret(value: str) -> str:
-    """对敏感值做脱敏展示。"""
+    """Mask a sensitive value for UI display."""
     if not value:
         return ""
     if len(value) <= 8:
@@ -214,7 +245,7 @@ def mask_secret(value: str) -> str:
 
 
 def validate_app_settings(values: dict[str, str]) -> dict[str, str]:
-    """校验即将写入的配置。"""
+    """Validate the effective settings view using server-managed secrets where needed."""
     errors: dict[str, str] = {}
 
     llm_provider = _normalize_provider(values.get("LLM_PROVIDER", "").strip())
@@ -240,7 +271,6 @@ def validate_app_settings(values: dict[str, str]) -> dict[str, str]:
     _validate_number(values, "LLM_TEMPERATURE", float, 0, 2, errors, "Temperature 需要在 0 到 2 之间。")
     _validate_number(values, "LLM_TIMEOUT", float, 1, 600, errors, "Timeout 需要在 1 到 600 秒之间。")
     _validate_number(values, "LLM_MAX_TOKENS", int, 128, 16384, errors, "Max Tokens 需要在 128 到 16384 之间。")
-    _validate_number(values, "API_PORT", int, 1, 65535, errors, "API Port 需要在 1 到 65535 之间。")
 
     chunk_size = _safe_cast(values.get("CHUNK_SIZE", ""), int)
     chunk_overlap = _safe_cast(values.get("CHUNK_OVERLAP", ""), int)
@@ -255,12 +285,7 @@ def validate_app_settings(values: dict[str, str]) -> dict[str, str]:
     if is_openai_provider(embedding_provider):
         _validate_required_text(values, "EMBEDDING_API_KEY", "OpenAI 模式下必须提供 Embedding API Key。", errors)
     if is_openai_compatible_provider(embedding_provider):
-        _validate_http_url(
-            values,
-            "EMBEDDING_API_BASE",
-            "兼容模式下必须提供有效的 Embedding API Base。",
-            errors,
-        )
+        _validate_http_url(values, "EMBEDDING_API_BASE", "兼容模式下必须提供有效的 Embedding API Base。", errors)
 
     if values.get("LLM_API_BASE", "").strip():
         _validate_http_url(values, "LLM_API_BASE", "LLM API Base 必须以 http:// 或 https:// 开头。", errors)

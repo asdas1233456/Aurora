@@ -17,13 +17,18 @@ from app.schemas import (
 from app.config import AppConfig
 from app.services.capability_guard import CapabilityGuard
 from app.services.knowledge_base_service import build_embedding_model
-from app.services.settings_service import build_config_from_settings_values, validate_app_settings
+from app.services.settings_service import (
+    build_config_from_settings_values,
+    ensure_editable_settings_only,
+    validate_app_settings,
+)
 
 
 def test_settings_connections(
     config: AppConfig,
     values: dict[str, object],
 ) -> SettingsConnectionReport:
+    ensure_editable_settings_only(values)
     runtime_config = build_config_from_settings_values(config, values)
     merged_values = {
         "LLM_PROVIDER": runtime_config.llm_provider,

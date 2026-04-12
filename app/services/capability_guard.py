@@ -307,6 +307,8 @@ def _citation_from_knowledge_item(item: KnowledgeContextItem) -> Citation:
         score=item.score,
         theme=item.theme,
         tags=list(item.tags),
+        chunk_id=item.chunk_id,
+        page_number=item.page_number,
     )
 
 

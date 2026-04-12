@@ -49,6 +49,8 @@ def build_system_overview(
         failed_file_count=status_counts.get("failed", 0),
         active_job_status=current_job.status if current_job else "",
         active_job_progress=current_job.progress if current_job else 0.0,
+        auth_mode=config.auth_mode,
+        deployment_mode=config.deployment_mode,
     )
 
 

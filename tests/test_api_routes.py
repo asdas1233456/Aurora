@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from app.api.dependencies import get_app_config, get_runtime_config
 from app.config import AppConfig
 from app.schemas import (
+    Citation,
     ChatMessageCreate,
     ChatResult,
     KnowledgeBaseJob,
@@ -16,6 +17,7 @@ from app.schemas import (
     MemoryRequestContext,
     RetrievedChunk,
 )
+from app.modules.system.request_concurrency import RequestConcurrencyGuard
 from app.services.abuse_guard import AbuseGuard
 from app.services.chat_memory_models import ChatMemoryCandidate
 from app.services.memory_audit_service import MemoryAuditService
@@ -23,16 +25,19 @@ from app.services.memory_repository import MemoryRepository
 from app.services.message_repository import MessageRepository
 from app.services.session_repository import SessionRepository
 from app.services.storage_service import connect_state_db
-from app.server import app
+from app.bootstrap.http_app import app
 
 
 def make_test_config(base_dir: Path) -> AppConfig:
     AbuseGuard.reset_all()
+    RequestConcurrencyGuard.reset_all()
     return AppConfig(
         base_dir=base_dir,
         data_dir=base_dir / "data",
         db_dir=base_dir / "db",
         logs_dir=base_dir / "logs",
+        tenant_id="t1",
+        auth_mode="trusted_header",
         llm_provider="openai",
         embedding_provider="openai",
         llm_api_key="sk-test",
@@ -42,6 +47,25 @@ def make_test_config(base_dir: Path) -> AppConfig:
         collection_name="test_collection",
         memory_llm_review_enabled=False,
     )
+
+
+class FakeHttpResponse:
+    def __init__(
+        self,
+        *,
+        text: str,
+        url: str = "https://example.test/aurora",
+        content_type: str = "text/html; charset=utf-8",
+        status_code: int = 200,
+    ) -> None:
+        self.text = text
+        self.url = url
+        self.status_code = status_code
+        self.headers = {"Content-Type": content_type}
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
 
 
 class ApiRouteTests(unittest.TestCase):
@@ -55,11 +79,172 @@ class ApiRouteTests(unittest.TestCase):
         app.dependency_overrides[get_app_config] = lambda: self.config
         app.dependency_overrides[get_runtime_config] = lambda: self.config
         self.client = TestClient(app)
+        self.client.headers.update(self.auth_headers())
 
     def tearDown(self):
         app.dependency_overrides.clear()
         self.client.close()
         self.temp_dir.cleanup()
+
+    def auth_headers(
+        self,
+        *,
+        user_id: str = "u1",
+        role: str = "admin",
+        team_id: str = "team-platform",
+        project_ids: list[str] | None = None,
+        active_project_id: str | None = None,
+        display_name: str = "Aurora Admin",
+        email: str = "aurora-admin@example.internal",
+    ) -> dict[str, str]:
+        allowed_project_ids = project_ids or ["p1"]
+        return {
+            self.config.auth_header_user_id: user_id,
+            self.config.auth_header_display_name: display_name,
+            self.config.auth_header_email: email,
+            self.config.auth_header_role: role,
+            self.config.auth_header_team_id: team_id,
+            self.config.auth_header_project_ids: ",".join(allowed_project_ids),
+            self.config.auth_active_project_header: active_project_id or allowed_project_ids[0],
+        }
+
+    def internal_headers(self, **overrides) -> dict[str, str]:
+        headers = dict(self.auth_headers(**overrides))
+        headers["X-Aurora-Internal-Api"] = "true"
+        return headers
+
+    def test_business_api_requires_authentication(self):
+        unauthenticated_client = TestClient(app)
+        try:
+            response = unauthenticated_client.get("/api/v1/system/bootstrap")
+        finally:
+            unauthenticated_client.close()
+
+        self.assertEqual(response.status_code, 401)
+
+    def test_member_cannot_access_admin_operations(self):
+        member_headers = self.auth_headers(role="member")
+
+        settings_response = self.client.get("/api/v1/settings", headers=member_headers)
+        self.assertEqual(settings_response.status_code, 403)
+
+        clear_logs_response = self.client.delete("/api/v1/logs", headers=member_headers)
+        self.assertEqual(clear_logs_response.status_code, 403)
+
+        rebuild_response = self.client.post(
+            "/api/v1/knowledge-base/rebuild",
+            headers=member_headers,
+            json={"mode": "sync"},
+        )
+        self.assertEqual(rebuild_response.status_code, 403)
+
+        internal_response = self.client.get("/api/v1/internal/providers", headers=member_headers)
+        self.assertEqual(internal_response.status_code, 403)
+
+    def test_active_project_must_stay_within_authorized_scope(self):
+        headers = self.auth_headers(project_ids=["p1"], active_project_id="p2")
+
+        response = self.client.get("/api/v1/system/bootstrap", headers=headers)
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(
+            response.json()["detail"],
+            "You do not have access to the requested project.",
+        )
+        with connect_state_db(self.config) as connection:
+            audit_row = connection.execute(
+                """
+                SELECT action, outcome, target_id
+                FROM application_audit_events
+                WHERE action = 'project.access'
+                ORDER BY created_at DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        self.assertIsNotNone(audit_row)
+        self.assertEqual(audit_row["outcome"], "denied")
+        self.assertEqual(audit_row["target_id"], "p2")
+
+    def test_settings_reject_operations_managed_keys_and_audit_failure(self):
+        response = self.client.put(
+            "/api/v1/settings",
+            json={"values": {"LLM_API_KEY": "sk-should-not-pass"}},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        payload = response.json()["detail"]
+        self.assertIn("forbidden_keys", payload)
+        self.assertEqual(payload["forbidden_keys"], ["LLM_API_KEY"])
+
+        test_response = self.client.post(
+            "/api/v1/settings/test",
+            json={"values": {"EMBEDDING_API_KEY": "embed-should-not-pass"}},
+        )
+        self.assertEqual(test_response.status_code, 400)
+        self.assertEqual(
+            test_response.json()["detail"]["forbidden_keys"],
+            ["EMBEDDING_API_KEY"],
+        )
+
+        with connect_state_db(self.config) as connection:
+            rows = connection.execute(
+                """
+                SELECT action, outcome, details_json
+                FROM application_audit_events
+                WHERE action IN ('settings.update', 'settings.test')
+                ORDER BY created_at ASC
+                """
+            ).fetchall()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["outcome"], "failed")
+        self.assertIn("LLM_API_KEY", rows[0]["details_json"])
+        self.assertEqual(rows[1]["outcome"], "failed")
+        self.assertIn("EMBEDDING_API_KEY", rows[1]["details_json"])
+
+    def test_upload_rejects_oversized_files_and_quarantines_them(self):
+        self.config.upload_max_file_bytes = 8
+
+        response = self.client.post(
+            "/api/v1/documents/upload",
+            files={"files": ("too-large.md", b"0123456789", "text/markdown")},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("exceeds the upload limit", response.json()["detail"])
+
+        quarantine_metadata_files = sorted(self.config.upload_quarantine_dir.glob("*.json"))
+        self.assertTrue(quarantine_metadata_files)
+        metadata_text = quarantine_metadata_files[-1].read_text(encoding="utf-8")
+        self.assertIn('"reason": "file_too_large"', metadata_text)
+
+    @patch("app.api.routes.knowledge_base.get_current_rebuild_job")
+    def test_rebuild_rejects_concurrent_active_job(self, mock_get_current_rebuild_job):
+        mock_get_current_rebuild_job.return_value = KnowledgeBaseJob(
+            job_id="job-running",
+            status="running",
+            mode="sync",
+            stage="indexing",
+            progress=0.42,
+            message="running",
+        )
+
+        response = self.client.post("/api/v1/knowledge-base/rebuild", json={"mode": "sync"})
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["detail"]["active_job_id"], "job-running")
+        with connect_state_db(self.config) as connection:
+            audit_row = connection.execute(
+                """
+                SELECT action, outcome, details_json
+                FROM application_audit_events
+                WHERE action = 'knowledge_base.rebuild'
+                ORDER BY created_at DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        self.assertIsNotNone(audit_row)
+        self.assertEqual(audit_row["outcome"], "denied")
+        self.assertIn("job_in_progress", audit_row["details_json"])
 
     def test_documents_list_and_preview_hide_absolute_paths(self):
         response = self.client.get("/api/v1/documents")
@@ -81,6 +266,9 @@ class ApiRouteTests(unittest.TestCase):
         preview_payload = preview_response.json()
         self.assertEqual(preview_payload["document_id"], document["document_id"])
         self.assertIn("Aurora api route acceptance content.", preview_payload["preview"])
+        self.assertIn("metadata", preview_payload)
+        self.assertEqual(preview_payload["metadata"]["file_type"], "md")
+        self.assertEqual(preview_payload["metadata"]["segment_count"], 1)
 
     def test_system_bootstrap_returns_combined_workspace_payload(self):
         response = self.client.get("/api/v1/system/bootstrap")
@@ -95,6 +283,17 @@ class ApiRouteTests(unittest.TestCase):
         self.assertEqual(payload["knowledge_status"]["document_count"], 1)
         self.assertEqual(len(payload["documents"]), 1)
         self.assertNotIn("path", payload["documents"][0])
+        self.assertEqual(payload["graph"]["summary"]["document_count"], 1)
+        self.assertIn("indexed_document_count", payload["graph"]["summary"])
+        self.assertIn("attention_document_count", payload["graph"]["summary"])
+        self.assertIn("status_counts", payload["graph"]["summary"])
+        document_node = next(
+            node for node in payload["graph"]["nodes"] if node["node_type"] == "document"
+        )
+        self.assertEqual(document_node["meta"]["document_id"], payload["documents"][0]["document_id"])
+        self.assertIn("chunk_count", document_node["meta"])
+        self.assertIn("citation_count", document_node["meta"])
+        self.assertNotIn("path", document_node["meta"])
 
     def test_rename_metadata_and_delete_use_document_ids(self):
         list_response = self.client.get("/api/v1/documents")
@@ -178,6 +377,59 @@ class ApiRouteTests(unittest.TestCase):
         )
         self.assertEqual(preview_response.status_code, 200)
         self.assertIn("API-001", preview_response.json()["preview"])
+
+    @patch("app.services.etl.parsers.url_parser.requests.get")
+    def test_upload_preview_accepts_url_shortcuts(self, mock_get):
+        mock_get.return_value = FakeHttpResponse(
+            text="""
+            <html>
+              <head><title>Aurora Shortcut</title></head>
+              <body>
+                <main>
+                  <h1>Shortcut Preview</h1>
+                  <p>Imported from URL shortcut.</p>
+                </main>
+              </body>
+            </html>
+            """,
+        )
+
+        upload_response = self.client.post(
+            "/api/v1/documents/upload",
+            files={
+                "files": (
+                    "aurora-shortcut.url",
+                    b"[InternetShortcut]\nURL=https://example.test/aurora\n",
+                    "text/plain",
+                )
+            },
+        )
+        self.assertEqual(upload_response.status_code, 200)
+
+        list_response = self.client.get("/api/v1/documents")
+        documents = list_response.json()
+        uploaded_document = next(
+            item for item in documents if item["name"] == "aurora-shortcut.url"
+        )
+        self.assertEqual(uploaded_document["extension"], "url")
+
+        preview_response = self.client.get(
+            "/api/v1/documents/preview",
+            params={"document_id": uploaded_document["document_id"]},
+        )
+        self.assertEqual(preview_response.status_code, 200)
+        preview_payload = preview_response.json()
+        self.assertIn("Shortcut Preview", preview_payload["preview"])
+        self.assertEqual(preview_payload["metadata"]["file_type"], "url")
+        self.assertEqual(preview_payload["metadata"]["title"], "Aurora Shortcut")
+        self.assertEqual(
+            preview_payload["metadata"]["source_url"],
+            "https://example.test/aurora",
+        )
+        self.assertEqual(
+            preview_payload["metadata"]["resolved_url"],
+            "https://example.test/aurora",
+        )
 
     @patch("app.api.routes.knowledge_base.rebuild_knowledge_base")
     def test_knowledge_base_routes_accept_sync_and_scan_modes(self, mock_rebuild_knowledge_base):
@@ -300,6 +552,47 @@ class ApiRouteTests(unittest.TestCase):
         self.assertEqual(audits[0].action, "retrieve")
         self.assertEqual(audits[0].memory_fact_id, scoped_fact.id)
         self.assertEqual(audits[1].action, "inject")
+
+    @patch("app.api.chat.answer_with_rag")
+    def test_chat_route_exposes_chunk_and_page_in_citations(self, mock_answer_with_rag):
+        mock_answer_with_rag.return_value = ChatResult(
+            answer="citation aware answer",
+            citations=[
+                Citation(
+                    knowledge_id="kb-1",
+                    document_id="doc-pdf",
+                    file_name="guide.pdf",
+                    source_path="guide.pdf",
+                    relative_path="guide.pdf",
+                    snippet="Page 2 snippet",
+                    full_text="Page 2 snippet with more context",
+                    score=0.93,
+                    chunk_id="chunk-2",
+                    page_number=2,
+                )
+            ],
+            retrieved_count=1,
+            memory_count=0,
+            used_knowledge_ids=["kb-1"],
+        )
+
+        response = self.client.post(
+            "/api/v1/chat/ask",
+            json={
+                "question": "What is on page 2?",
+                "chat_history": [],
+                "tenant_id": "t1",
+                "user_id": "u1",
+                "project_id": "p1",
+                "session_id": "s-citation-page",
+                "request_id": "req-citation-page",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        citation = response.json()["citations"][0]
+        self.assertEqual(citation["chunk_id"], "chunk-2")
+        self.assertEqual(citation["page_number"], 2)
 
     @patch("app.api.chat.answer_with_rag")
     def test_chat_route_recovers_recent_messages_from_persistence(self, mock_answer_with_rag):
@@ -929,7 +1222,7 @@ class ApiRouteTests(unittest.TestCase):
         self.assertEqual(allowed_response.status_code, 200)
         self.assertEqual(allowed_response.json()["item"]["scope_type"], "global")
 
-    @patch("app.api.routes.providers.retrieve_chunks")
+    @patch("app.services.capabilities.builtin.rag_query_tool.retrieve_chunks")
     def test_internal_provider_api_lists_resolves_and_runs_dry_run(self, mock_retrieve_chunks):
         mock_retrieve_chunks.return_value = (
             [
@@ -995,7 +1288,7 @@ class ApiRouteTests(unittest.TestCase):
         self.assertEqual(persisted_sessions, 0)
         self.assertEqual(persisted_messages, 0)
 
-    @patch("app.api.routes.providers.retrieve_chunks")
+    @patch("app.services.capabilities.builtin.rag_query_tool.retrieve_chunks")
     @patch("app.api.chat.answer_with_rag")
     def test_features_one_two_three_coexist_without_cross_boundary_side_effects(
         self,
@@ -1108,8 +1401,11 @@ class ApiRouteTests(unittest.TestCase):
         self.assertEqual(persisted_sessions_after_dry_run, 1)
         self.assertEqual(persisted_messages_after_dry_run, 2)
 
-    def test_internal_provider_api_requires_internal_header(self):
-        response = self.client.get("/api/v1/internal/providers")
+    def test_internal_provider_api_requires_admin_permission(self):
+        response = self.client.get(
+            "/api/v1/internal/providers",
+            headers=self.auth_headers(role="member"),
+        )
         self.assertEqual(response.status_code, 403)
 
     def test_internal_chat_api_lists_session_details_and_recovery(self):
@@ -1211,9 +1507,129 @@ class ApiRouteTests(unittest.TestCase):
         self.assertEqual(recover_payload["request_context"]["session_id"], "s-chat-1")
         self.assertEqual(recover_payload["request_context"]["user_id"], "u1")
 
-    def test_internal_chat_api_requires_internal_header(self):
+    def test_public_chat_session_routes_list_messages_and_rename_owned_sessions(self):
+        session_repository = SessionRepository(self.config)
+        message_repository = MessageRepository(self.config)
+        request_context = MemoryRequestContext(
+            request_id="req-chat-public",
+            tenant_id="t1",
+            user_id="u1",
+            project_id="p1",
+            session_id="s-public-1",
+        )
+        session_repository.ensure_session(request_context, "Alpha Session")
+        message_repository.create_message(
+            ChatMessageCreate(
+                tenant_id="t1",
+                session_id="s-public-1",
+                user_id="u1",
+                role="user",
+                content="How do I inspect the current Activity?",
+            )
+        )
+        message_repository.create_message(
+            ChatMessageCreate(
+                tenant_id="t1",
+                session_id="s-public-1",
+                user_id="u1",
+                role="assistant",
+                content="Use adb shell dumpsys window windows.",
+            )
+        )
+
+        list_response = self.client.get("/api/v1/chat/sessions")
+        self.assertEqual(list_response.status_code, 200)
+        list_payload = list_response.json()
+        self.assertEqual(list_payload["count"], 1)
+        self.assertEqual(list_payload["items"][0]["session"]["id"], "s-public-1")
+        self.assertEqual(list_payload["items"][0]["message_count"], 2)
+        self.assertEqual(list_payload["items"][0]["last_message"]["role"], "assistant")
+
+        detail_response = self.client.get("/api/v1/chat/sessions/s-public-1")
+        self.assertEqual(detail_response.status_code, 200)
+        detail_payload = detail_response.json()
+        self.assertEqual(detail_payload["session"]["title"], "Alpha Session")
+        self.assertEqual(detail_payload["message_count"], 2)
+
+        messages_response = self.client.get("/api/v1/chat/sessions/s-public-1/messages")
+        self.assertEqual(messages_response.status_code, 200)
+        messages_payload = messages_response.json()
+        self.assertEqual(
+            [(item["role"], item["content"]) for item in messages_payload["messages"]],
+            [
+                ("user", "How do I inspect the current Activity?"),
+                ("assistant", "Use adb shell dumpsys window windows."),
+            ],
+        )
+
+        rename_response = self.client.patch(
+            "/api/v1/chat/sessions/s-public-1",
+            json={"title": "Renamed Session"},
+        )
+        self.assertEqual(rename_response.status_code, 200)
+        self.assertEqual(rename_response.json()["session"]["title"], "Renamed Session")
+
+    @patch("app.api.routes.chat.prepare_stream_answer")
+    def test_chat_sse_root_and_graph_alias_filter(self, mock_prepare_stream_answer):
+        mock_prepare_stream_answer.return_value = (
+            iter(["Aurora", " answer"]),
+            [
+                Citation(
+                    knowledge_id="k1",
+                    document_id="d1",
+                    file_name="notes.md",
+                    source_path="data/notes.md",
+                    relative_path="notes.md",
+                    snippet="Aurora api route acceptance content.",
+                    full_text="Aurora api route acceptance content.",
+                    score=0.91,
+                )
+            ],
+            1,
+            0,
+            18.5,
+            "rewritten",
+            "adb current activity",
+            0.82,
+            "summary",
+            "openai",
+            "gpt-4.1-mini",
+            ["retrieve", "answer"],
+            [],
+            ["k1"],
+            None,
+        )
+
+        with self.client.stream(
+            "POST",
+            "/api/v1/chat",
+            json={
+                "question": "ADB 怎么查看当前前台 Activity？",
+                "chat_history": [],
+                "session_id": "sse-session-1",
+            },
+        ) as response:
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.headers["content-type"].split(";")[0], "text/event-stream")
+            stream_text = "".join(response.iter_text())
+
+        self.assertIn("event: meta", stream_text)
+        self.assertIn("event: delta", stream_text)
+        self.assertIn("event: done", stream_text)
+        self.assertIn('"answer": "Aurora answer"', stream_text)
+
+        graph_response = self.client.get("/api/v1/graph", params={"type": "md"})
+        self.assertEqual(graph_response.status_code, 200)
+        self.assertEqual(graph_response.json()["summary"]["document_count"], 1)
+
+        empty_graph_response = self.client.get("/api/v1/graph", params={"type": "pdf"})
+        self.assertEqual(empty_graph_response.status_code, 200)
+        self.assertEqual(empty_graph_response.json()["summary"]["document_count"], 0)
+
+    def test_internal_chat_api_requires_admin_permission(self):
         response = self.client.get(
             "/api/v1/internal/chat/sessions",
+            headers=self.auth_headers(role="member"),
             params={"tenant_id": "t1"},
         )
         self.assertEqual(response.status_code, 403)

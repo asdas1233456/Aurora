@@ -11,6 +11,7 @@ from app.schemas import (
     Citation,
     ChatMessageRecord,
     ChatSessionRecord,
+    DocumentPreviewPayload,
     DocumentSummary,
     KnowledgeBaseJob,
     KnowledgeGraph,
@@ -53,6 +54,10 @@ def serialize_document_summary(item: DocumentSummary) -> dict[str, object]:
     }
 
 
+def serialize_document_preview(item: DocumentPreviewPayload) -> dict[str, object]:
+    return asdict(item)
+
+
 def serialize_citation(item: Citation) -> dict[str, object]:
     return {
         "knowledge_id": item.knowledge_id,
@@ -66,6 +71,8 @@ def serialize_citation(item: Citation) -> dict[str, object]:
         "lexical_score": item.lexical_score,
         "theme": item.theme,
         "tags": item.tags,
+        "chunk_id": item.chunk_id,
+        "page_number": item.page_number,
     }
 
 
@@ -93,6 +100,7 @@ def serialize_workspace_bootstrap(payload: dict[str, object]) -> dict[str, objec
         "knowledge_status": knowledge_status,
         "documents": [serialize_document_summary(item) for item in payload.get("documents", [])],
         "graph": serialize_graph(payload["graph"]),
+        "auth": dict(payload.get("auth") or {}),
     }
 
 

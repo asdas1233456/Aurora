@@ -233,7 +233,7 @@ retrieval_score =
 本地验证命令：
 
 ```powershell
-& .\.venv-p1\Scripts\python.exe -m unittest tests.test_services.MemoryIsolationTests tests.test_api_routes.ApiRouteTests tests.test_provider_independence
+& .\.venv\Scripts\python.exe -m unittest tests.test_services.MemoryIsolationTests tests.test_api_routes.ApiRouteTests tests.test_provider_independence
 ```
 
 ## 10. 第五特性验收 Checklist

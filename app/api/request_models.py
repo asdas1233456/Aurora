@@ -19,12 +19,13 @@ class ChatRequestModel(BaseModel):
     question: str = Field(..., description="User question")
     top_k: int | None = Field(default=None, ge=1, le=20)
     chat_history: list[ChatMessageModel] = Field(default_factory=list)
-    tenant_id: str | None = Field(default=None, min_length=1)
-    user_id: str | None = Field(default=None, min_length=1)
-    project_id: str | None = Field(default=None, min_length=1)
     session_id: str | None = Field(default=None, min_length=1)
     session_title: str | None = Field(default=None)
     request_id: str | None = Field(default=None, min_length=1)
+
+
+class ChatSessionRenameModel(BaseModel):
+    title: str = Field(..., min_length=1, max_length=120)
 
 
 class MemoryManualWriteModel(BaseModel):
@@ -108,6 +109,7 @@ class ProviderDryRunModel(BaseModel):
     user_id: str | None = Field(default=None, min_length=1)
     project_id: str | None = Field(default=None, min_length=1)
     session_id: str | None = Field(default=None, min_length=1)
+    department_id: str | None = Field(default=None, min_length=1)
     session_title: str | None = Field(default=None)
     request_id: str | None = Field(default=None, min_length=1)
     team_id: str | None = Field(default=None, min_length=1)

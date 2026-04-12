@@ -1,10 +1,10 @@
-"""Knowledge base indexing services."""
+﻿"""Knowledge base indexing services."""
 
 from __future__ import annotations
 
-import chromadb
 import logging
 
+import chromadb
 from llama_index.core import VectorStoreIndex
 from llama_index.core.node_parser import SentenceSplitter
 from llama_index.core.schema import BaseNode, Document
@@ -12,6 +12,10 @@ from llama_index.embeddings.openai import OpenAIEmbedding
 from llama_index.vector_stores.chroma import ChromaVectorStore
 
 from app.config import AppConfig, is_openai_compatible_provider, is_openai_provider
+from app.services.document_materialization_service import (
+    clear_materialized_documents,
+    delete_materialized_document_by_source_path,
+)
 from app.services.document_service import load_documents
 from app.services.local_index_service import (
     clear_local_index,
@@ -105,7 +109,13 @@ def create_nodes_from_documents(config: AppConfig, documents: list[Document]) ->
 
 
 def delete_document_chunks(config: AppConfig, source_path: str) -> None:
-    """Delete one document from every retrieval backend."""
+    """Delete one document from every retrieval backend and structured store."""
+    delete_retrieval_document_chunks(config, source_path)
+    delete_materialized_document_by_source_path(config, source_path)
+
+
+def delete_retrieval_document_chunks(config: AppConfig, source_path: str) -> None:
+    """Delete one document from active retrieval backends without touching version records."""
     if config.embedding_api_ready and _vector_store_exists(config):
         try:
             collection = get_chroma_collection(config, reset=False)
@@ -124,6 +134,7 @@ def clear_retrieval_backends(config: AppConfig) -> None:
         except Exception:
             pass
     clear_local_index(config)
+    clear_materialized_documents(config)
 
 
 def add_nodes_with_embeddings(

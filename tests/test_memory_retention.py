@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from app.config import AppConfig
+from app.modules.system.request_concurrency import RequestConcurrencyGuard
 from app.schemas import MemoryFactCreate, MemoryRequestContext
 from app.services.abuse_guard import AbuseGuard
 from app.services.lifecycle_maintenance_service import LifecycleMaintenanceService
@@ -15,6 +16,7 @@ from app.services.retention_audit_service import RetentionAuditService
 
 def make_config(base_dir: Path) -> AppConfig:
     AbuseGuard.reset_all()
+    RequestConcurrencyGuard.reset_all()
     return AppConfig(
         base_dir=base_dir,
         data_dir=base_dir / "data",
