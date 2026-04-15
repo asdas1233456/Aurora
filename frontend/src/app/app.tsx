@@ -1,4 +1,4 @@
-import { Suspense, lazy, startTransition, useEffect, useMemo, type ReactNode } from "react";
+import { Suspense, lazy, startTransition, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { useQuery } from "@tanstack/react-query";
@@ -7,6 +7,7 @@ import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from "reac
 
 import { getWorkspaceBootstrap } from "@/api/client";
 import { Badge } from "@/components/ui/badge";
+import { BirthdayEasterEgg } from "@/components/ui/birthday-easter-egg";
 import { cn } from "@/lib/utils";
 import { useAppStore, type NavKey } from "@/store/app-store";
 
@@ -46,6 +47,8 @@ export function App() {
   const location = useLocation();
   const navigate = useNavigate();
   const reducedMotion = useReducedMotion();
+  const birthdayClickRef = useRef({ count: 0, lastClickAt: 0 });
+  const [birthdayOpen, setBirthdayOpen] = useState(false);
   const setWorkspaceMeta = useAppStore((state) => state.setWorkspaceMeta);
   const workspaceQuery = useQuery({
     queryKey: ["workspace-bootstrap"],
@@ -102,6 +105,18 @@ export function App() {
   const permissions = new Set(workspaceQuery.data.auth.permissions);
   const guard = (permission: string, element: ReactNode) =>
     permissions.has(permission) ? element : <Navigate to={allowedNavItems[0]?.to ?? "/"} replace />;
+  const handleBrandClick = () => {
+    const now = Date.now();
+    const nextCount = now - birthdayClickRef.current.lastClickAt > 2600
+      ? 1
+      : birthdayClickRef.current.count + 1;
+
+    birthdayClickRef.current = { count: nextCount, lastClickAt: now };
+    if (nextCount >= 5) {
+      birthdayClickRef.current = { count: 0, lastClickAt: 0 };
+      setBirthdayOpen(true);
+    }
+  };
 
   return (
     <div className="relative min-h-dvh overflow-x-hidden px-4 pb-4 pt-4 md:px-6">
@@ -110,7 +125,14 @@ export function App() {
       <div className="mx-auto flex min-h-[calc(100dvh-2rem)] max-w-[1680px] flex-col gap-3">
         <header className="glass-panel flex flex-col gap-2 rounded-[28px] px-4 py-3 md:px-5">
           <div className="flex flex-col gap-2 xl:flex-row xl:items-center xl:justify-between">
-            <div className="flex items-center gap-3">
+            <button
+              type="button"
+              className="birthday-brand-trigger flex items-center gap-3 text-left"
+              aria-label="Aurora"
+              data-testid="birthday-trigger"
+              tabIndex={-1}
+              onClick={handleBrandClick}
+            >
               <div className="flex h-10 w-10 items-center justify-center rounded-[16px] bg-teal-50 text-teal-700 ring-1 ring-teal-100">
                 <Home className="h-5 w-5" aria-hidden="true" />
               </div>
@@ -120,7 +142,7 @@ export function App() {
                 </h1>
                 <Badge variant="soft">{workspaceQuery.data.overview.app_version}</Badge>
               </div>
-            </div>
+            </button>
 
             <div className="flex flex-wrap items-center gap-2">
               <Badge variant="outline" data-testid="workspace-user-badge">
@@ -178,6 +200,7 @@ export function App() {
           </motion.main>
         </AnimatePresence>
       </div>
+      <BirthdayEasterEgg open={birthdayOpen} onOpenChange={setBirthdayOpen} />
     </div>
   );
 }

@@ -57,7 +57,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { MarkdownPreview } from "@/components/ui/markdown-preview";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { TitleInfoIcon } from "@/components/ui/title-info-icon";
@@ -85,7 +85,7 @@ type RenameFormValues = z.infer<typeof renameSchema>;
 type MetadataFormValues = z.infer<typeof metadataSchema>;
 
 const ALL_VALUE = "__all__";
-const LIBRARY_PANEL_CLASS = "glass-panel xl:flex xl:h-[clamp(560px,calc(100dvh-170px),680px)] xl:flex-col";
+const LIBRARY_PANEL_CLASS = "glass-panel xl:flex xl:h-[clamp(500px,calc(100dvh-235px),610px)] xl:flex-col";
 
 export function KnowledgePage() {
   const queryClient = useQueryClient();
@@ -278,10 +278,10 @@ export function KnowledgePage() {
   return (
     <section className="space-y-3" data-testid="knowledge-library">
       <Card className="glass-panel overflow-hidden" data-testid="knowledge-snapshot">
-        <CardHeader className="items-start gap-2 px-3 pb-2 pt-3 md:px-4">
+        <CardHeader className="items-start gap-2 px-3 pb-1.5 pt-2.5 md:px-4">
           <div className="grid w-full gap-2 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-center">
             <div>
-              <CardTitle className="flex items-center gap-2 font-display text-[1.55rem] leading-tight">
+              <CardTitle className="flex items-center gap-2 font-display text-[1.45rem] leading-tight">
                 知识库
                 <TitleInfoIcon label="知识库说明">
                   像图书馆一样搜索、浏览和预览资料；上传与索引收进工具层，避免干扰找资料的主流程。
@@ -289,21 +289,21 @@ export function KnowledgePage() {
               </CardTitle>
             </div>
             <div className="flex flex-wrap gap-2 xl:justify-end">
-              <Button type="button" className="h-10" onClick={() => setUploadOpen(true)} data-testid="upload-dialog-button">
+              <Button type="button" className="h-9" onClick={() => setUploadOpen(true)} data-testid="upload-dialog-button">
                 <FilePlus2 className="h-4 w-4" />
                 上传资料
               </Button>
-              <Button type="button" variant="secondary" className="h-10" onClick={() => setIndexOpen(true)} data-testid="index-tools-button">
+              <Button type="button" variant="secondary" className="h-9" onClick={() => setIndexOpen(true)} data-testid="index-tools-button">
                 <Settings2 className="h-4 w-4" />
                 索引管理
               </Button>
             </div>
           </div>
         </CardHeader>
-        <CardContent className="space-y-2 px-3 pb-3 md:px-4">
-          <div className="grid items-center gap-2 rounded-[22px] border border-teal-100 bg-white/72 p-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.86)] lg:grid-cols-[minmax(260px,1fr)_repeat(3,minmax(136px,170px))]">
+        <CardContent className="space-y-2 px-3 pb-2.5 md:px-4">
+          <div className="grid items-center gap-2 rounded-[20px] border border-teal-100 bg-white/72 p-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.86)] lg:grid-cols-[minmax(260px,1fr)_repeat(3,minmax(136px,170px))]">
             <div
-              className="flex h-11 items-center gap-3 rounded-[16px] border border-teal-100 bg-white/88 px-4 text-slate-900 transition focus-within:border-teal-500 focus-within:bg-white"
+              className="flex h-14 items-center gap-3 rounded-[20px] border border-teal-100 bg-white/88 px-5 text-slate-900 transition focus-within:border-teal-500 focus-within:bg-white"
               data-testid="knowledge-search-control"
             >
               <Search className="pointer-events-none h-4 w-4 shrink-0 translate-y-px text-slate-500" />
@@ -370,14 +370,14 @@ export function KnowledgePage() {
 
       <div className="grid items-start gap-4 xl:grid-cols-[260px_minmax(0,1fr)_380px] xl:items-stretch">
         <Card className={LIBRARY_PANEL_CLASS} data-testid="knowledge-filter-panel">
-          <CardHeader className="items-start xl:shrink-0">
+          <CardHeader className="items-start py-3 xl:shrink-0">
             <CardTitle className="flex items-center gap-2">
               <Library className="h-4 w-4 text-teal-700" />
               资料集合
               <TitleInfoIcon label="资料集合说明">按状态、类型和主题缩小范围，列表会实时更新。</TitleInfoIcon>
             </CardTitle>
           </CardHeader>
-          <CardContent className="snow-scrollbar space-y-3 xl:min-h-0 xl:flex-1 xl:overflow-y-auto xl:pr-2">
+          <CardContent className="snow-scrollbar space-y-2.5 xl:min-h-0 xl:flex-1 xl:overflow-y-auto xl:pr-2">
             <LibraryFacet label="当前结果" value={formatNumber(filteredDocuments.length)} hint={`共 ${formatNumber(documents.length)} 份资料`} />
             <LibraryFacet label="文件类型" value={formatNumber(typeOptions.length)} hint={typeOptions.slice(0, 3).join(" / ") || "暂无类型"} />
             <LibraryFacet label="主题数量" value={formatNumber(themeOptions.length)} hint={themeOptions.slice(0, 2).join(" / ") || "未分类"} />
@@ -400,7 +400,7 @@ export function KnowledgePage() {
         </Card>
 
         <Card className={LIBRARY_PANEL_CLASS} data-testid="knowledge-library-list">
-          <CardHeader className="items-start xl:shrink-0">
+          <CardHeader className="items-start py-3 xl:shrink-0">
             <div className="flex w-full flex-wrap items-center justify-between gap-3">
               <div>
                 <CardTitle className="flex items-center gap-2">
@@ -420,7 +420,7 @@ export function KnowledgePage() {
               <Badge variant="soft">{formatNumber(filteredDocuments.length)} 项</Badge>
             </div>
           </CardHeader>
-          <CardContent className="xl:min-h-0 xl:flex-1">
+          <CardContent className="xl:flex xl:min-h-0 xl:flex-1">
             <DocumentList
               documents={filteredDocuments}
               selectedDocumentId={selectedDocumentId}
@@ -537,8 +537,8 @@ function DocumentList({
   }
 
   return (
-    <div className="overflow-hidden rounded-[24px] border border-white/70 bg-white/66" data-testid="documents-table">
-      <div className="hidden grid-cols-[minmax(220px,1.65fr)_76px_minmax(120px,0.9fr)_94px_70px_128px] items-center border-b border-white/70 bg-white/82 px-4 py-3 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500 lg:grid">
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[22px] border border-white/70 bg-white/66" data-testid="documents-table">
+      <div className="hidden grid-cols-[minmax(220px,1.65fr)_76px_minmax(120px,0.9fr)_94px_70px_128px] items-center border-b border-white/70 bg-white/82 px-4 py-2.5 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500 lg:grid">
         <span>文档</span>
         <span>类型</span>
         <span>主题</span>
@@ -546,13 +546,13 @@ function DocumentList({
         <span>切片</span>
         <span>更新时间</span>
       </div>
-      <div className="hidden lg:block">
+      <div className="hidden min-h-0 flex-1 lg:block">
         <Virtuoso
           className="snow-scrollbar"
-          style={{ height: "clamp(360px, calc(100dvh - 395px), 560px)" }}
+          style={{ height: "100%" }}
           data={documents}
           computeItemKey={(_, document) => document.document_id}
-          increaseViewportBy={360}
+          increaseViewportBy={180}
           itemContent={(_, document) => (
             <DocumentRow
               document={document}
@@ -603,7 +603,7 @@ function DocumentRow({
       data-testid={`document-select-${document.document_id}`}
       onClick={() => onSelect(document.document_id)}
       className={cn(
-        "grid min-h-[76px] w-full grid-cols-[minmax(220px,1.65fr)_76px_minmax(120px,0.9fr)_94px_70px_128px] items-stretch border-b border-white/60 px-4 py-3 text-left transition",
+        "grid min-h-[66px] w-full grid-cols-[minmax(220px,1.65fr)_76px_minmax(120px,0.9fr)_94px_70px_128px] items-stretch border-b border-white/60 px-4 py-2.5 text-left transition",
         selected
           ? "bg-teal-50/86 shadow-[inset_3px_0_0_rgba(15,118,110,0.8)]"
           : "bg-white/48 hover:bg-teal-50/58",
@@ -764,12 +764,12 @@ function PreviewPanel({
               </div>
             </div>
 
-            <div className="rounded-[24px] bg-slate-950 p-4">
+            <div className="rounded-[24px] border border-teal-100 bg-white/85 p-4">
               <div className="mb-3 flex items-center justify-between gap-3">
-                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-300">正文预览</p>
+                <p className="text-xs font-semibold text-slate-500">正文预览</p>
                 <Dialog>
                   <DialogTrigger asChild>
-                    <Button variant="outline" size="sm" disabled={!preview} data-testid="preview-launcher-button">
+                    <Button variant="outline" size="sm" disabled={!preview || previewLoading || previewError} data-testid="preview-launcher-button">
                       查看全文
                     </Button>
                   </DialogTrigger>
@@ -781,27 +781,27 @@ function PreviewPanel({
                       <DialogTitle data-testid="document-preview-name">{selectedDocument.name}</DialogTitle>
                       <DialogDescription>{selectedDocument.relative_path}</DialogDescription>
                     </DialogHeader>
-                    <div className="snow-scrollbar min-h-0 flex-1 overflow-auto px-6 py-4" data-testid="preview-scroll-area">
-                      <pre
-                        className="min-h-full whitespace-pre-wrap rounded-[22px] bg-slate-950 p-5 font-mono text-xs leading-7 text-slate-100"
+                    <div className="snow-scrollbar min-h-0 flex-1 overflow-auto bg-slate-50/70 px-6 py-4" data-testid="preview-scroll-area">
+                      <div
+                        className="min-h-full rounded-[18px] border border-teal-100 bg-white/95 p-5"
                         data-testid="preview-content"
                       >
-                        {preview ?? "暂无预览内容"}
-                      </pre>
+                        <MarkdownPreview value={preview} fallback="暂无预览内容。" />
+                      </div>
                     </div>
                   </DialogContent>
                 </Dialog>
               </div>
-              <pre
-                className="snow-scrollbar max-h-[260px] overflow-auto whitespace-pre-wrap font-mono text-xs leading-7 text-slate-100"
+              <div
+                className="snow-scrollbar max-h-[300px] overflow-auto rounded-[18px] border border-teal-100 bg-white/95 p-4"
                 data-testid="preview-inline-content"
               >
                 {previewLoading
-                  ? "正在载入预览..."
+                  ? <p className="text-sm leading-7 text-slate-500">正在载入预览...</p>
                   : previewError
-                    ? "预览加载失败，请稍后重试。"
-                    : preview || "暂无预览内容。"}
-              </pre>
+                    ? <p className="text-sm leading-7 text-rose-600">预览加载失败，请稍后重试。</p>
+                    : <MarkdownPreview value={preview} fallback="暂无预览内容。" />}
+              </div>
             </div>
 
             <div className="grid gap-2 text-sm">

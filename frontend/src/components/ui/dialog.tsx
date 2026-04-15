@@ -1,5 +1,6 @@
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { X } from "lucide-react";
+import { forwardRef } from "react";
 
 import { cn } from "@/lib/utils";
 
@@ -9,17 +10,18 @@ export const DialogTrigger = DialogPrimitive.Trigger;
 export const DialogPortal = DialogPrimitive.Portal;
 export const DialogClose = DialogPrimitive.Close;
 
-export function DialogOverlay({
-  className,
-  ...props
-}: React.ComponentPropsWithoutRef<typeof DialogPrimitive.Overlay>) {
-  return (
-    <DialogPrimitive.Overlay
-      className={cn("fixed inset-0 z-50 bg-slate-950/30 backdrop-blur-sm", className)}
-      {...props}
-    />
-  );
-}
+export const DialogOverlay = forwardRef<
+  React.ElementRef<typeof DialogPrimitive.Overlay>,
+  React.ComponentPropsWithoutRef<typeof DialogPrimitive.Overlay>
+>(({ className, ...props }, ref) => (
+  <DialogPrimitive.Overlay
+    ref={ref}
+    className={cn("fixed inset-0 z-50 bg-slate-950/24", className)}
+    {...props}
+  />
+));
+
+DialogOverlay.displayName = DialogPrimitive.Overlay.displayName;
 
 export function DialogContent({
   className,
@@ -31,7 +33,7 @@ export function DialogContent({
       <DialogOverlay />
       <DialogPrimitive.Content
         className={cn(
-          "fixed left-1/2 top-1/2 z-50 w-[calc(100%-2rem)] max-w-2xl -translate-x-1/2 -translate-y-1/2 rounded-[28px] border border-white/70 bg-white/90 p-6 shadow-[0_30px_100px_rgba(15,118,110,0.24)] backdrop-blur-2xl",
+          "fixed left-1/2 top-1/2 z-50 w-[calc(100%-2rem)] max-w-2xl -translate-x-1/2 -translate-y-1/2 rounded-[28px] border border-white/70 bg-white/95 p-6 shadow-[0_20px_70px_rgba(15,118,110,0.16)]",
           className,
         )}
         {...props}

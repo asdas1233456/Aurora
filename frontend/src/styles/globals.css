@@ -18,7 +18,8 @@
 }
 
 html {
-  scroll-behavior: smooth;
+  scroll-behavior: auto;
+  -webkit-text-size-adjust: 100%;
 }
 
 body {
@@ -29,8 +30,11 @@ body {
     radial-gradient(circle at 85% 10%, rgba(206, 239, 246, 0.9), transparent 26%),
     linear-gradient(180deg, #f8fdfd 0%, #ecf7f6 46%, #e7f3f1 100%);
   color: var(--aurora-ink);
-  font-family: "HarmonyOS Sans SC", "MiSans", "Microsoft YaHei UI", "PingFang SC", "Noto Sans CJK SC", sans-serif;
-  text-rendering: geometricPrecision;
+  font-family: "Segoe UI Variable", "Segoe UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+  font-synthesis-weight: none;
+  text-rendering: auto;
+  -webkit-font-smoothing: subpixel-antialiased;
+  -moz-osx-font-smoothing: auto;
 }
 
 button,
@@ -45,8 +49,8 @@ select {
 }
 
 .font-display {
-  font-family: "HarmonyOS Sans SC", "MiSans", "Microsoft YaHei UI", "PingFang SC", "Noto Sans CJK SC", sans-serif;
-  letter-spacing: -0.02em;
+  font-family: "Segoe UI Variable", "Segoe UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+  letter-spacing: 0;
 }
 
 .font-mono {
@@ -57,11 +61,11 @@ select {
   position: relative;
   overflow: hidden;
   border: 1px solid var(--aurora-border);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 253, 253, 0.92));
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.985), rgba(250, 254, 254, 0.965));
   box-shadow:
-    0 10px 24px rgba(15, 118, 110, 0.05),
-    inset 0 1px 0 rgba(255, 255, 255, 0.82);
-  backdrop-filter: blur(5px);
+    0 8px 18px rgba(15, 118, 110, 0.035),
+    inset 0 1px 0 rgba(255, 255, 255, 0.92);
+  backdrop-filter: none;
 }
 
 .glass-panel.sticky {
@@ -73,26 +77,19 @@ select {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background:
-    linear-gradient(130deg, rgba(255, 255, 255, 0.12), transparent 34%),
-    linear-gradient(180deg, transparent, rgba(255, 255, 255, 0.08));
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent 42%);
 }
 
 .surface-tile {
-  border: 1px solid rgba(204, 238, 235, 0.74);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(249, 253, 253, 0.9));
+  border: 1px solid rgba(180, 225, 221, 0.82);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.985), rgba(251, 254, 254, 0.965));
   box-shadow:
-    0 6px 14px rgba(15, 118, 110, 0.035),
-    inset 0 1px 0 rgba(255, 255, 255, 0.78);
+    0 4px 10px rgba(15, 118, 110, 0.026),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
 }
 
 .aurora-orb {
-  position: fixed;
-  z-index: 0;
-  border-radius: 9999px;
-  filter: blur(30px);
-  opacity: 0.48;
-  pointer-events: none;
+  display: none;
 }
 
 .aurora-orb-left {
@@ -172,7 +169,7 @@ select {
   overflow: hidden;
   background: rgba(255, 255, 255, 0.96);
   border: 1px solid rgba(204, 238, 235, 0.82);
-  backdrop-filter: blur(4px);
+  backdrop-filter: none;
 }
 
 .chat-bubble-user::before,
@@ -214,7 +211,7 @@ select {
   border: 1px solid rgba(255, 255, 255, 0.72);
   background: rgba(255, 255, 255, 0.82);
   box-shadow: 0 12px 28px rgba(15, 118, 110, 0.1);
-  backdrop-filter: blur(12px);
+  backdrop-filter: none;
 }
 
 .react-flow__controls-button {
@@ -233,7 +230,7 @@ select {
   border: 1px solid rgba(255, 255, 255, 0.76);
   background: rgba(255, 255, 255, 0.82);
   box-shadow: 0 12px 28px rgba(15, 118, 110, 0.08);
-  backdrop-filter: blur(10px);
+  backdrop-filter: none;
 }
 
 .react-flow__edge-path {
@@ -259,20 +256,117 @@ select {
   color: #64748b;
 }
 
-.text-slate-400 {
-  color: #64748b;
+.tracking-\[0\.12em\],
+.tracking-\[0\.16em\],
+.tracking-\[0\.18em\],
+.tracking-\[0\.2em\],
+.tracking-\[0\.20em\],
+.tracking-\[0\.24em\] {
+  letter-spacing: 0 !important;
 }
 
-.text-slate-500 {
+.text-\[9\.5px\],
+.text-\[10px\],
+.text-\[10\.5px\] {
+  font-size: 11.5px !important;
+  line-height: 1rem !important;
+}
+
+.bg-white\/48,
+.bg-white\/58,
+.bg-white\/60,
+.bg-white\/65,
+.bg-white\/66,
+.bg-white\/68,
+.bg-white\/70,
+.bg-white\/72,
+.bg-white\/76,
+.bg-white\/78,
+.bg-white\/80,
+.bg-white\/82,
+.bg-white\/84,
+.bg-white\/86,
+.bg-white\/88 {
+  background-color: rgba(255, 255, 255, 0.94) !important;
+}
+
+.border-white\/60,
+.border-white\/70,
+.border-white\/75,
+.border-white\/80 {
+  border-color: rgba(180, 225, 221, 0.76) !important;
+}
+
+.birthday-brand-trigger {
+  margin: 0;
+  padding: 0;
+  cursor: default;
+  border: 0;
+  background: transparent;
+  color: inherit;
+}
+
+.birthday-brand-trigger:focus,
+.birthday-brand-trigger:focus-visible,
+.birthday-brand-trigger:active {
+  outline: none;
+  box-shadow: none;
+}
+
+.birthday-dialog {
+  background: #ffffff;
+  box-shadow: 0 18px 55px rgba(15, 118, 110, 0.14);
+  backdrop-filter: none;
+}
+
+.birthday-scroll {
+  overscroll-behavior: contain;
+  scroll-behavior: auto;
+  scrollbar-gutter: stable;
+  -webkit-overflow-scrolling: touch;
+}
+
+.birthday-letter {
+  contain: layout paint;
+}
+
+.birthday-letter h1 {
+  margin-bottom: 0.75rem;
+  color: #0f172a;
+}
+
+.birthday-letter h2 {
+  margin-top: 2rem;
+  border-top: 1px solid rgba(153, 246, 228, 0.72);
+  padding-top: 1.2rem;
+  color: #0f766e;
+}
+
+.birthday-letter h3 {
+  margin-top: 1.25rem;
+  color: #0f172a;
+}
+
+.birthday-letter blockquote {
+  border-left-color: #0f766e;
+  background: rgba(240, 253, 250, 0.92);
+  font-weight: 600;
+}
+
+.text-slate-400 {
   color: #475569;
 }
 
-.text-slate-600 {
+.text-slate-500 {
   color: #334155;
 }
 
-.text-slate-700 {
+.text-slate-600 {
   color: #1f2937;
+}
+
+.text-slate-700 {
+  color: #111827;
 }
 
 .placeholder\:text-slate-400::placeholder {

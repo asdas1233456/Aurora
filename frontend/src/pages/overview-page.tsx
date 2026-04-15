@@ -70,19 +70,29 @@ const PIPELINE_STEPS = [
   { key: "index", label: "索引", icon: Database },
 ] as const;
 
+const OVERVIEW_REFRESH_INTERVAL_MS = 5_000;
+
 export function OverviewPage() {
   const reducedMotion = useReducedMotion();
   const workspaceQuery = useQuery({
     queryKey: ["workspace-bootstrap"],
     queryFn: getWorkspaceBootstrap,
+    refetchInterval: OVERVIEW_REFRESH_INTERVAL_MS,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
   });
   const sessionsQuery = useQuery({
     queryKey: ["chat-sessions", "overview-dashboard"],
     queryFn: () => listChatSessions({ limit: 50 }),
+    refetchInterval: OVERVIEW_REFRESH_INTERVAL_MS,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
   });
 
   const payload = workspaceQuery.data;
   const sessions = sessionsQuery.data?.items ?? [];
+  const lastUpdatedAt = Math.max(workspaceQuery.dataUpdatedAt, sessionsQuery.dataUpdatedAt);
+  const liveFetching = workspaceQuery.isFetching || sessionsQuery.isFetching;
 
   const dashboard = useMemo(() => {
     if (!payload) {
@@ -140,23 +150,26 @@ export function OverviewPage() {
   }
 
   return (
-    <section className="space-y-4" data-testid="overview-dashboard">
+    <section className="space-y-3" data-testid="overview-dashboard">
       <motion.div
-        className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]"
+        className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_320px]"
         initial={reducedMotion ? undefined : { opacity: 0, y: 10 }}
         animate={reducedMotion ? undefined : { opacity: 1, y: 0 }}
         transition={reducedMotion ? undefined : { duration: 0.2, ease: "easeOut" }}
       >
         <Card className="glass-panel overflow-hidden">
-          <CardHeader className="pb-3">
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <CardHeader className="pb-2">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
               <div className="max-w-3xl">
-                <CardTitle className="flex items-center gap-2 text-2xl text-slate-950">
-                  Aurora 运行态势
-                  <TitleInfoIcon label="Aurora 运行态势说明">
-                    一屏查看系统健康、知识库索引、问答质量和上线前需要处理的事项。
-                  </TitleInfoIcon>
-                </CardTitle>
+                <div className="flex flex-wrap items-center gap-2">
+                  <CardTitle className="flex items-center gap-2 text-2xl text-slate-950">
+                    Aurora 运行态势
+                    <TitleInfoIcon label="Aurora 运行态势说明">
+                      一屏查看系统健康、知识库索引、问答质量和上线前需要处理的事项。
+                    </TitleInfoIcon>
+                  </CardTitle>
+                  <LiveDataPill updatedAt={lastUpdatedAt} isFetching={liveFetching} />
+                </div>
               </div>
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:min-w-[500px]">
                 <StatusPill label="知识库" value={dashboard.overview.knowledge_base_ready ? "可用" : "不可用"} tone={dashboard.overview.knowledge_base_ready ? "good" : "danger"} />
@@ -175,7 +188,7 @@ export function OverviewPage() {
                 return (
                   <motion.div
                     key={item.key}
-                    className={cn("surface-tile rounded-[20px] p-3", isAttention && "border-amber-200 bg-amber-50/70")}
+                    className={cn("surface-tile rounded-[18px] p-3", isAttention && "border-amber-200 bg-amber-50/70")}
                     initial={reducedMotion ? undefined : { opacity: 0, y: 8 }}
                     animate={reducedMotion ? undefined : { opacity: 1, y: 0 }}
                     transition={reducedMotion ? undefined : { delay: index * 0.035, duration: 0.18 }}
@@ -228,8 +241,8 @@ export function OverviewPage() {
         </Card>
       </motion.div>
 
-      <div className="grid auto-rows-fr items-stretch gap-4 xl:grid-cols-[minmax(0,1.18fr)_minmax(360px,0.75fr)_340px]">
-        <Card className="glass-panel h-full" data-testid="overview-index-card">
+      <div className="grid items-stretch gap-3 xl:auto-rows-fr xl:grid-cols-[minmax(0,1.18fr)_minmax(360px,0.75fr)_340px]">
+        <Card className="glass-panel flex h-full flex-col" data-testid="overview-index-card">
           <CardHeader className="pb-2">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
@@ -242,37 +255,60 @@ export function OverviewPage() {
               <Badge variant="outline">{dashboard.status.current_job?.status || dashboard.overview.active_job_status || "idle"}</Badge>
             </div>
           </CardHeader>
-          <CardContent className="grid gap-5 lg:grid-cols-[260px_minmax(0,1fr)]">
-            <IndexProgressRing
-              value={dashboard.indexProgress}
-              jobProgress={dashboard.activeJobProgress}
-              indexed={dashboard.indexedDocuments}
-              total={dashboard.totalDocuments}
-              pending={dashboard.pendingDocuments}
-            />
-            <div className="space-y-4">
-              <div className="rounded-[24px] border border-teal-100 bg-white/86 p-4">
-                <div className="mb-4 flex items-center justify-between gap-3">
-                  <div>
-                    <p className="text-sm font-semibold text-slate-900">索引流水线</p>
-                    <p className="mt-1 text-xs text-slate-600">{dashboard.status.current_job?.message || "后台任务空闲，索引状态已稳定。"}</p>
+          <CardContent className="flex flex-1 flex-col gap-3">
+            <div className="grid flex-1 items-stretch gap-4 lg:grid-cols-[230px_minmax(0,1fr)]">
+              <IndexProgressRing
+                value={dashboard.indexProgress}
+                jobProgress={dashboard.activeJobProgress}
+                indexed={dashboard.indexedDocuments}
+                total={dashboard.totalDocuments}
+                pending={dashboard.pendingDocuments}
+                status={dashboard.pendingDocuments > 0 ? "队列处理中" : "稳定在线"}
+              />
+              <div className="grid min-h-0 content-between gap-3">
+                <div className="flex flex-col rounded-[22px] border border-teal-100 bg-white/86 p-3">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-900">索引流水线</p>
+                      <p className="mt-1 text-xs text-slate-600">{dashboard.status.current_job?.message || "后台任务空闲，索引状态已稳定。"}</p>
+                    </div>
+                    <Badge variant="soft">{Math.round(dashboard.activeJobProgress * 100)}%</Badge>
                   </div>
-                  <Badge variant="soft">{Math.round(dashboard.activeJobProgress * 100)}%</Badge>
+                  <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-5">
+                    {dashboard.pipeline.map(({ key, ...step }) => <PipelineStep key={key} {...step} />)}
+                  </div>
                 </div>
-                <div className="grid gap-3 md:grid-cols-5">
-                  {dashboard.pipeline.map(({ key, ...step }) => <PipelineStep key={key} {...step} />)}
+                <div className="grid gap-3 md:grid-cols-3">
+                  <MetricTile icon={GitBranch} label="图谱节点" value={formatNumber(payload.graph.nodes.length)} helper={`${formatNumber(payload.graph.edges.length)} 条连接`} />
+                  <MetricTile icon={Database} label="主题覆盖" value={formatNumber(Number(payload.graph.summary.category_count ?? 0))} helper="按知识主题聚类" />
+                  <MetricTile icon={Zap} label="引用覆盖" value={formatNumber(Number(payload.graph.summary.citation_covered_document_count ?? 0))} helper="至少被引用过的文档" />
                 </div>
-              </div>
-              <div className="grid gap-3 md:grid-cols-3">
-                <MetricTile icon={GitBranch} label="图谱节点" value={formatNumber(payload.graph.nodes.length)} helper={`${formatNumber(payload.graph.edges.length)} 条连接`} />
-                <MetricTile icon={Database} label="主题覆盖" value={formatNumber(Number(payload.graph.summary.category_count ?? 0))} helper="按知识主题聚类" />
-                <MetricTile icon={Zap} label="引用覆盖" value={formatNumber(Number(payload.graph.summary.citation_covered_document_count ?? 0))} helper="至少被引用过的文档" />
+                <div className="grid gap-2">
+                  <OverviewStatusStrip
+                    icon={ShieldCheck}
+                    label="问答准备"
+                    value={`${formatNumber(dashboard.indexedDocuments)} 份`}
+                    detail="可参与检索回答"
+                  />
+                  <OverviewStatusStrip
+                    icon={FileClock}
+                    label="当前队列"
+                    value={`${formatNumber(dashboard.pendingDocuments)} 个`}
+                    detail={dashboard.pendingDocuments > 0 ? "等待同步或重建" : "暂无待处理"}
+                  />
+                  <OverviewStatusStrip
+                    icon={Network}
+                    label="知识连接"
+                    value={`${formatNumber(payload.graph.edges.length)} 条`}
+                    detail="图谱关系已同步"
+                  />
+                </div>
               </div>
             </div>
           </CardContent>
         </Card>
 
-        <Card className="glass-panel h-full" data-testid="overview-quality-card">
+        <Card className="glass-panel flex h-full flex-col" data-testid="overview-quality-card">
           <CardHeader className="pb-2">
             <CardTitle className="flex items-center gap-2 text-lg">
               <Bot className="h-4 w-4 text-teal-700" />
@@ -280,7 +316,7 @@ export function OverviewPage() {
               <TitleInfoIcon label="问答质量说明">基于最近 {formatNumber(dashboard.answerStats.sampleCount)} 条会话样本。</TitleInfoIcon>
             </CardTitle>
           </CardHeader>
-          <CardContent className="space-y-4">
+          <CardContent className="grid flex-1 grid-rows-[auto_minmax(0,1fr)_auto_auto] gap-3">
             <div className="grid grid-cols-3 gap-3">
               <MetricTile icon={ShieldCheck} label="平均置信" value={formatConfidence(dashboard.answerStats.averageConfidence)} helper="最近回答" />
               <MetricTile icon={Activity} label="引用命中" value={`${dashboard.answerStats.citationCoverage}%`} helper="有引用回答" />
@@ -288,6 +324,11 @@ export function OverviewPage() {
             </div>
             <TrendLineChart points={dashboard.answerStats.trend} />
             <LatencyDistribution segments={dashboard.answerStats.latencySegments} />
+            <div className="grid grid-cols-3 gap-2">
+              <QualityMiniStat label="样本" value={formatNumber(dashboard.answerStats.sampleCount)} />
+              <QualityMiniStat label="低置信" value={formatNumber(dashboard.answerStats.lowConfidenceTotal)} />
+              <QualityMiniStat label="命中率" value={`${dashboard.answerStats.citationCoverage}%`} />
+            </div>
           </CardContent>
         </Card>
         <AssetStreamCard documents={dashboard.recentDocuments} categories={dashboard.topCategories} />
@@ -448,6 +489,18 @@ function getTime(value: string | null | undefined) {
   return Number.isNaN(time) ? 0 : time;
 }
 
+function formatRefreshTime(value: number) {
+  if (!value) {
+    return "--:--:--";
+  }
+  return new Intl.DateTimeFormat("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(new Date(value));
+}
+
 function StatusPill({ label, value, tone }: { label: string; value: string; tone: Tone }) {
   return (
     <div className="rounded-[18px] border border-teal-100 bg-white/88 px-3 py-2">
@@ -460,38 +513,64 @@ function StatusPill({ label, value, tone }: { label: string; value: string; tone
   );
 }
 
-function IndexProgressRing({ value, jobProgress, indexed, total, pending }: {
+function LiveDataPill({ updatedAt, isFetching }: { updatedAt: number; isFetching: boolean }) {
+  return (
+    <div
+      className="inline-flex items-center gap-2 rounded-full border border-teal-100 bg-white/86 px-3 py-1.5 text-xs font-semibold text-teal-800"
+      data-testid="overview-live-status"
+    >
+      {isFetching ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Clock3 className="h-3.5 w-3.5" />}
+      <span>{isFetching ? "同步中" : "实时同步"}</span>
+      <span className="text-slate-500">{formatRefreshTime(updatedAt)}</span>
+    </div>
+  );
+}
+
+function IndexProgressRing({ value, jobProgress, indexed, total, pending, status }: {
   value: number;
   jobProgress: number;
   indexed: number;
   total: number;
   pending: number;
+  status: string;
 }) {
   const radius = 58;
   const circumference = 2 * Math.PI * radius;
   const progress = Math.max(0, Math.min(1, value));
   const job = Math.max(0, Math.min(1, jobProgress));
+  const percent = Math.round(progress * 100);
 
   return (
-    <div className="surface-tile flex flex-col items-center justify-center rounded-[28px] p-5 text-center">
-      <div className="relative">
-        <svg viewBox="0 0 150 150" className="h-40 w-40" aria-label="知识库索引进度">
-          <circle cx="75" cy="75" r={radius} fill="none" stroke="rgba(15,118,110,0.1)" strokeWidth="12" />
-          <circle cx="75" cy="75" r={radius} fill="none" stroke="rgba(15,118,110,0.24)" strokeWidth="12" strokeDasharray={circumference} strokeDashoffset={circumference * (1 - job)} strokeLinecap="round" transform="rotate(-90 75 75)" />
-          <circle cx="75" cy="75" r={radius} fill="none" stroke="url(#overview-progress-gradient)" strokeWidth="12" strokeDasharray={circumference} strokeDashoffset={circumference * (1 - progress)} strokeLinecap="round" transform="rotate(-90 75 75)" />
-          <defs>
-            <linearGradient id="overview-progress-gradient" x1="20" x2="130" y1="20" y2="130">
-              <stop offset="0%" stopColor="#0f766e" />
-              <stop offset="100%" stopColor="#22d3ee" />
-            </linearGradient>
-          </defs>
-        </svg>
-        <div className="absolute inset-0 flex flex-col items-center justify-center">
-          <p className="text-[2rem] font-semibold leading-none text-slate-950">{Math.round(progress * 100)}%</p>
-          <p className="mt-1 text-xs font-semibold text-slate-600">索引完成</p>
+    <div className="surface-tile relative flex h-full min-h-[420px] flex-col overflow-hidden rounded-[28px] p-4 text-left">
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-teal-700 via-cyan-400 to-amber-300" />
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">Index Core</p>
+          <p className="mt-1 text-base font-semibold text-slate-950">知识库心跳</p>
+        </div>
+        <Badge variant={pending > 0 ? "status" : "soft"}>{status}</Badge>
+      </div>
+
+      <div className="flex min-h-0 flex-1 items-center justify-center py-4">
+        <div className="relative flex aspect-square w-[min(14rem,88%)] items-center justify-center rounded-full bg-white/72 shadow-[inset_0_1px_12px_rgba(15,118,110,0.06)]">
+          <svg viewBox="0 0 150 150" className="h-full w-full" aria-label="知识库索引进度">
+            <circle cx="75" cy="75" r={radius} fill="none" stroke="rgba(15,118,110,0.1)" strokeWidth="12" />
+            <circle cx="75" cy="75" r={radius} fill="none" stroke="rgba(15,118,110,0.24)" strokeWidth="12" strokeDasharray={circumference} strokeDashoffset={circumference * (1 - job)} strokeLinecap="round" transform="rotate(-90 75 75)" />
+            <circle cx="75" cy="75" r={radius} fill="none" stroke="url(#overview-progress-gradient)" strokeWidth="12" strokeDasharray={circumference} strokeDashoffset={circumference * (1 - progress)} strokeLinecap="round" transform="rotate(-90 75 75)" />
+            <defs>
+              <linearGradient id="overview-progress-gradient" x1="20" x2="130" y1="20" y2="130">
+                <stop offset="0%" stopColor="#0f766e" />
+                <stop offset="100%" stopColor="#22d3ee" />
+              </linearGradient>
+            </defs>
+          </svg>
+          <div className="absolute inset-0 flex flex-col items-center justify-center">
+            <p className="text-[2.2rem] font-semibold leading-none text-slate-950">{percent}%</p>
+            <p className="mt-1 text-xs font-semibold text-slate-600">索引完成</p>
+          </div>
         </div>
       </div>
-      <div className="mt-3 grid w-full grid-cols-3 gap-2 text-xs">
+      <div className="grid w-full grid-cols-3 gap-2 text-center text-xs">
         <RingStat label="已索引" value={formatNumber(indexed)} />
         <RingStat label="总文档" value={formatNumber(total)} />
         <RingStat label="待处理" value={formatNumber(pending)} />
@@ -502,7 +581,7 @@ function IndexProgressRing({ value, jobProgress, indexed, total, pending }: {
 
 function RingStat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-2xl bg-white/80 px-2 py-2">
+    <div className="rounded-2xl border border-teal-100 bg-white/82 px-2 py-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.82)]">
       <p className="font-semibold text-slate-950">{value}</p>
       <p className="mt-0.5 text-[11px] text-slate-600">{label}</p>
     </div>
@@ -516,11 +595,11 @@ function PipelineStep({ label, value, icon: Icon, tone }: {
   tone: Tone;
 }) {
   return (
-    <div className="rounded-[20px] border border-teal-100 bg-white/82 p-3">
-      <div className={cn("mb-3 inline-flex rounded-2xl p-2", toneClasses[tone].soft)}>
+    <div className="flex min-h-[96px] flex-col rounded-[20px] border border-teal-100 bg-white/82 p-3">
+      <div className={cn("inline-flex rounded-2xl p-2", toneClasses[tone].soft)}>
         <Icon className="h-4 w-4" />
       </div>
-      <p className="text-sm font-semibold text-slate-950">{label}</p>
+      <p className="mt-2.5 text-sm font-semibold text-slate-950">{label}</p>
       <p className="mt-1 text-xs leading-5 text-slate-600">{value}</p>
     </div>
   );
@@ -546,6 +625,28 @@ function MetricTile({ icon: Icon, label, value, helper }: {
   );
 }
 
+function OverviewStatusStrip({ icon: Icon, label, value, detail }: {
+  icon: LucideIcon;
+  label: string;
+  value: string;
+  detail: string;
+}) {
+  return (
+    <div className="flex min-w-0 items-center gap-3 rounded-[18px] border border-teal-100 bg-white/78 px-3 py-2.5">
+      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[14px] bg-teal-50 text-teal-700">
+        <Icon className="h-4 w-4" />
+      </div>
+      <div className="min-w-0">
+        <div className="flex min-w-0 items-baseline gap-2">
+          <p className="truncate text-xs font-semibold text-slate-600">{label}</p>
+          <p className="shrink-0 text-sm font-semibold text-slate-950">{value}</p>
+        </div>
+        <p className="mt-0.5 truncate text-[11px] text-slate-600">{detail}</p>
+      </div>
+    </div>
+  );
+}
+
 function TrendLineChart({ points }: { points: TrendPoint[] }) {
   const max = Math.max(...points.map((point) => point.value), 1);
   const coords = points.map((point, index) => {
@@ -557,7 +658,7 @@ function TrendLineChart({ points }: { points: TrendPoint[] }) {
   const area = `${path} L ${coords.at(-1)?.x ?? 322} 104 L 18 104 Z`;
 
   return (
-    <div className="rounded-[22px] border border-teal-100 bg-white/86 p-2.5" data-testid="overview-chat-trend">
+    <div className="flex min-h-[185px] flex-col rounded-[22px] border border-teal-100 bg-white/86 p-2.5" data-testid="overview-chat-trend">
       <div className="mb-2 flex items-center justify-between gap-3">
         <div>
           <p className="text-sm font-semibold text-slate-950">最近 7 天问答趋势</p>
@@ -565,7 +666,7 @@ function TrendLineChart({ points }: { points: TrendPoint[] }) {
         </div>
         <Badge variant="outline">{formatNumber(points.reduce((sum, point) => sum + point.value, 0))} 轮</Badge>
       </div>
-      <svg viewBox="0 0 340 126" className="h-20 w-full" role="img" aria-label="最近七天问答趋势">
+      <svg viewBox="0 0 340 126" className="min-h-0 flex-1 w-full" role="img" aria-label="最近七天问答趋势">
         <defs>
           <linearGradient id="trend-area" x1="0" x2="0" y1="0" y2="1">
             <stop offset="0%" stopColor="rgba(15,118,110,0.22)" />
@@ -593,7 +694,7 @@ function LatencyDistribution({ segments }: { segments: LatencySegment[] }) {
   const total = segments.reduce((sum, segment) => sum + segment.value, 0);
 
   return (
-    <div className="rounded-[22px] border border-teal-100 bg-white/86 p-2.5" data-testid="overview-latency-distribution">
+    <div className="rounded-[22px] border border-teal-100 bg-white/86 p-3" data-testid="overview-latency-distribution">
       <div className="mb-2 flex items-center justify-between gap-3">
         <div>
           <p className="text-sm font-semibold text-slate-950">检索耗时分布</p>
@@ -618,6 +719,15 @@ function LatencyDistribution({ segments }: { segments: LatencySegment[] }) {
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+function QualityMiniStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-[16px] border border-teal-100 bg-white/78 px-3 py-2">
+      <p className="text-[11px] font-semibold text-slate-600">{label}</p>
+      <p className="mt-1 text-base font-semibold leading-none text-slate-950">{value}</p>
     </div>
   );
 }
@@ -658,7 +768,7 @@ function AssetStreamCard({
   const maxCategory = Math.max(...categories.map((entry) => entry.document_count), 1);
 
   return (
-    <Card className="glass-panel h-full" data-testid="overview-asset-stream">
+    <Card className="glass-panel flex h-full flex-col" data-testid="overview-asset-stream">
       <CardHeader className="pb-2">
         <CardTitle className="flex items-center gap-2 text-lg">
           <LineChart className="h-4 w-4 text-teal-700" />
@@ -666,26 +776,30 @@ function AssetStreamCard({
           <TitleInfoIcon label="知识资产流说明">最近文档与主题重心放在同一处扫读。</TitleInfoIcon>
         </CardTitle>
       </CardHeader>
-      <CardContent className="space-y-3">
+      <CardContent className="grid flex-1 grid-rows-[auto_minmax(0,1fr)_auto] gap-3">
         <div className="space-y-2">
           {documents.slice(0, 1).map((document) => (
             <RecentDocumentCard key={document.document_id} document={document} />
           ))}
         </div>
-        <div className="border-t border-teal-100 pt-3">
+        <div className="flex min-h-0 flex-col border-t border-teal-100 pt-3">
           <div className="mb-3 flex items-center justify-between">
             <p className="text-sm font-semibold text-slate-950">主题分布</p>
             <Badge variant="outline">{categories.length}</Badge>
           </div>
-          <div className="space-y-2">
+          <div className="grid flex-1 content-start gap-2">
             {categories.length === 0 ? (
               <p className="text-sm text-slate-600">当前还没有足够主题数据。</p>
             ) : (
-              categories.slice(0, 3).map((item) => (
+              categories.slice(0, 5).map((item) => (
                 <TopicRow key={item.label} label={item.label} value={item.document_count} max={maxCategory} />
               ))
             )}
           </div>
+        </div>
+        <div className="grid grid-cols-2 gap-2 border-t border-teal-100 pt-3">
+          <AssetMiniStat label="最近资料" value={formatNumber(documents.length)} />
+          <AssetMiniStat label="主题重心" value={formatNumber(categories.length)} />
         </div>
       </CardContent>
     </Card>
@@ -721,6 +835,15 @@ function TopicRow({ label, value, max }: { label: string; value: number; max: nu
       <div className="h-2 overflow-hidden rounded-full bg-teal-50">
         <div className="h-full rounded-full bg-gradient-to-r from-teal-700 to-cyan-400" style={{ width: `${width}%` }} />
       </div>
+    </div>
+  );
+}
+
+function AssetMiniStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-[16px] border border-teal-100 bg-white/78 px-3 py-2">
+      <p className="text-[11px] font-semibold text-slate-600">{label}</p>
+      <p className="mt-1 text-base font-semibold leading-none text-slate-950">{value}</p>
     </div>
   );
 }

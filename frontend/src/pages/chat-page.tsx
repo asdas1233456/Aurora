@@ -614,7 +614,6 @@ export function ChatPage() {
                     return (
                       <motion.div
                         key={message.id}
-                        layout
                         initial={{ opacity: 0, y: 14 }}
                         animate={{ opacity: 1, y: 0 }}
                         transition={{ duration: 0.22, ease: "easeOut" }}
@@ -661,7 +660,7 @@ export function ChatPage() {
             </ScrollArea>
 
             <div
-              className="relative shrink-0 rounded-[24px] border border-white/70 bg-[linear-gradient(180deg,rgba(255,255,255,0.88),rgba(247,252,252,0.94))] p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.78)]"
+              className="shrink-0 rounded-[22px] border border-white/70 bg-[linear-gradient(180deg,rgba(255,255,255,0.88),rgba(247,252,252,0.94))] p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.78)]"
               data-testid="chat-input-shell"
             >
               <div className={cn("mb-2 flex flex-wrap items-center justify-end gap-3 text-xs text-slate-600", !streamAbortController && "hidden")}>
@@ -680,18 +679,15 @@ export function ChatPage() {
                   </Button>
                 ) : null}
               </div>
-              <Textarea
-                value={question}
-                onChange={(event) => setQuestion(event.target.value)}
-                placeholder="输入问题，让 Aurora 结合知识库给出带引用的回答"
-                className="min-h-[64px] max-h-[120px] resize-none rounded-[20px] pr-32"
-                data-testid="chat-input"
-              />
-              <div className="pointer-events-none absolute right-5 top-1/2 mt-0 flex -translate-y-1/2 flex-wrap items-center justify-end gap-3">
-                <div className="hidden max-w-md text-[11px] leading-5 text-slate-600 2xl:block">
-                  当前 Top K、会话标题和上下文会一起传给流式接口，右侧面板会在同一轮回答里实时联动。
-                </div>
-                <Button className="pointer-events-auto h-10 px-5" onClick={handleSend} disabled={!question.trim() || chatMutation.isPending} data-testid="send-chat-button">
+              <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+                <Textarea
+                  value={question}
+                  onChange={(event) => setQuestion(event.target.value)}
+                  placeholder="输入问题，让 Aurora 结合知识库给出带引用的回答"
+                  className="min-h-[58px] max-h-[120px] resize-none rounded-[18px]"
+                  data-testid="chat-input"
+                />
+                <Button className="h-[58px] px-5" onClick={handleSend} disabled={!question.trim() || chatMutation.isPending} data-testid="send-chat-button">
                   发送问题
                 </Button>
               </div>
@@ -806,40 +802,35 @@ function FirstPromptPanel({
 }) {
   return (
     <motion.div
-      layout
       initial={{ opacity: 0, y: 12, scale: 0.99 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
       transition={{ duration: 0.24, ease: "easeOut" }}
       data-testid="chat-first-prompt-panel"
-      className="relative overflow-hidden rounded-[24px] border border-dashed border-teal-200/90 bg-[linear-gradient(140deg,rgba(255,255,255,0.92),rgba(236,248,247,0.76))] px-4 py-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.78)]"
+      className="relative overflow-hidden rounded-[22px] border border-teal-100 bg-[linear-gradient(140deg,rgba(255,255,255,0.9),rgba(241,250,249,0.78))] px-4 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.78)]"
     >
-      <div className="pointer-events-none absolute -left-10 -top-16 h-40 w-40 rounded-full bg-cyan-100/60 blur-3xl" />
-      <div className="pointer-events-none absolute right-8 top-6 h-2.5 w-2.5 rounded-full bg-cyan-300/75 shadow-[0_0_0_9px_rgba(125,211,252,0.08)]" />
-      <div className="pointer-events-none absolute left-8 top-10 h-2 w-2 rounded-full bg-teal-300/75 shadow-[0_0_0_8px_rgba(20,184,166,0.08)]" />
-
-      <div className="relative grid gap-3 xl:grid-cols-[minmax(0,1fr)_18rem] xl:items-center">
+      <div className="relative grid gap-3 xl:grid-cols-[minmax(0,1fr)_17rem] xl:items-center">
         <div className="flex min-w-0 items-start gap-3">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[15px] border border-white/80 bg-white/90 text-teal-700 shadow-[0_12px_24px_rgba(15,118,110,0.1)] backdrop-blur-xl">
-            <Sparkles className="h-5 w-5" />
+          <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-[12px] border border-teal-100 bg-white/86 text-teal-700">
+            <Sparkles className="h-[18px] w-[18px]" />
           </div>
           <div className="min-w-0">
-            <p className="text-[9.5px] uppercase tracking-[0.28em] text-teal-700/65">First Prompt</p>
-            <h3 className="mt-1.5 font-display text-[1.28rem] leading-tight text-slate-900">
+            <p className="text-[9.5px] uppercase tracking-[0.18em] text-teal-700/65">First Prompt</p>
+            <h3 className="mt-1 font-display text-[1.18rem] leading-tight text-slate-900">
               向 Aurora 发出第一个问题
             </h3>
-            <p className="mt-1.5 max-w-2xl text-[12.5px] leading-5 text-slate-600">
+            <p className="mt-1 max-w-2xl text-[12.5px] leading-5 text-slate-600">
               它会检索知识库、流式生成答案，并把引用依据同步到右侧面板。
             </p>
           </div>
         </div>
 
-        <div className="grid gap-2 rounded-[22px] border border-white/75 bg-white/78 p-2.5 text-left">
+        <div className="grid gap-2 rounded-[18px] border border-white/75 bg-white/78 p-2 text-left">
           <PromptHint label="适合提问" value="故障排查、README 对齐、环境配置、知识库总结" />
           <PromptHint label="输出联动" value="引用片段、检索耗时、总耗时与置信度" />
         </div>
       </div>
 
-      <div className="relative mt-3 grid grid-cols-1 gap-2 md:grid-cols-3">
+      <div className="relative mt-2.5 grid grid-cols-1 gap-2 md:grid-cols-3">
         {prompts.map((prompt, index) => (
           <Button
             key={prompt}
@@ -871,7 +862,6 @@ function EvidenceEmptyState({
 }) {
   return (
     <motion.div
-      layout
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.22, ease: "easeOut" }}
@@ -903,7 +893,6 @@ function EvidenceEmptyState({
 function CitationCard({ citation, index }: { citation: CitationPayload; index: number }) {
   return (
     <motion.div
-      layout
       initial={{ opacity: 0, y: 14 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.22, delay: Math.min(index * 0.04, 0.16), ease: "easeOut" }}

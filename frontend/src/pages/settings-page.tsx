@@ -219,9 +219,9 @@ export function SettingsPage() {
               <TitleInfoIcon label="可调参数中心说明">高频配置留在首屏，高级参数默认折叠，避免上线前误调。</TitleInfoIcon>
             </CardTitle>
           </CardHeader>
-          <CardContent className="space-y-4">
+          <CardContent className="space-y-3">
             <FormSection title="模型连接" description="Provider、模型名和兼容 API Base。">
-              <div className="grid gap-3 xl:grid-cols-2">
+              <div className="grid gap-2 xl:grid-cols-2">
                 <FormSelect control={form.control} name="llm_provider" label="LLM Provider" options={["openai", "openai_compatible", "deepseek", "qwen", "zhipu", "moonshot", "siliconflow", "openrouter"]} />
                 <FormSelect control={form.control} name="embedding_provider" label="Embedding Provider" options={["openai", "openai_compatible", "qwen", "zhipu", "siliconflow"]} />
                 <FormInput form={form} name="llm_model" label="LLM Model" />
@@ -231,7 +231,7 @@ export function SettingsPage() {
                     兼容 API Base
                     <ChevronDown className="h-4 w-4 shrink-0 text-slate-500 transition group-open:rotate-180" />
                   </summary>
-                  <div className="mt-3 grid gap-3 xl:grid-cols-2">
+                  <div className="mt-2 grid gap-2 xl:grid-cols-2">
                     <FormInput form={form} name="llm_api_base" label="LLM API Base" helper="留空时使用 provider 默认地址。" />
                     <FormInput form={form} name="embedding_api_base" label="Embedding API Base" helper="留空时使用 provider 默认地址。" />
                   </div>
@@ -240,18 +240,18 @@ export function SettingsPage() {
             </FormSection>
 
             <FormSection title="检索生成" description="影响答案召回、拒答阈值和生成稳定性。">
-              <div className="grid gap-3 lg:grid-cols-3">
+              <div className="grid gap-2 lg:grid-cols-3">
                 <FormSlider control={form.control} name="top_k" label="Top K" min={1} max={20} step={1} />
                 <FormSlider control={form.control} name="llm_temperature" label="Temperature" min={0} max={2} step={0.1} />
                 <FormSlider control={form.control} name="no_answer_min_score" label="No Answer Min Score" min={0} max={1} step={0.01} />
               </div>
-              <div className="mt-3 grid gap-3 xl:grid-cols-2">
+              <div className="mt-2 grid gap-2 xl:grid-cols-2">
                 <FormInput form={form} name="collection_name" label="Collection Name" />
                 <FormSelect control={form.control} name="log_level" label="Log Level" options={["DEBUG", "INFO", "WARNING", "ERROR"]} />
               </div>
             </FormSection>
 
-            <details className="group border-t border-teal-100/80 pt-3" data-testid="settings-advanced-section">
+            <details className="group border-t border-teal-100/80 pt-2" data-testid="settings-advanced-section">
               <summary className="flex cursor-pointer list-none items-center justify-between gap-3 rounded-2xl px-1 py-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-teal-500/50">
                 <span>
                   <span className="block text-sm font-semibold text-slate-900">高级参数</span>
@@ -259,7 +259,7 @@ export function SettingsPage() {
                 </span>
                 <ChevronDown className="h-4 w-4 shrink-0 text-slate-500 transition group-open:rotate-180" />
               </summary>
-              <div className="grid gap-3 pb-1 pt-3 xl:grid-cols-2">
+              <div className="grid gap-2 pb-1 pt-2 xl:grid-cols-2">
                 <FormInput form={form} name="chunk_size" label="Chunk Size" type="number" min={100} max={4000} />
                 <FormInput form={form} name="chunk_overlap" label="Chunk Overlap" type="number" min={0} max={1000} />
                 <FormInput form={form} name="max_history_turns" label="Max History Turns" type="number" min={0} max={20} />
@@ -384,7 +384,7 @@ function FormSection({
   children: ReactNode;
 }) {
   return (
-    <fieldset className="border-t border-teal-100/80 pt-3">
+    <fieldset className="border-t border-teal-100/80 pt-2">
       <legend className="px-1">
         <span className="inline-flex items-center gap-2 text-sm font-semibold text-slate-900">
           {title}
@@ -418,7 +418,7 @@ function FormInput({
   const inputId = String(name);
 
   return (
-    <div className="space-y-1.5">
+    <div className="space-y-1">
       <Label htmlFor={inputId}>{label}</Label>
       <Input
         id={inputId}
@@ -454,13 +454,13 @@ function FormSlider({
       control={control}
       name={name}
       render={({ field }) => (
-        <div className="rounded-2xl border border-teal-100/80 bg-white/72 p-3">
+        <div className="rounded-2xl border border-teal-100/80 bg-white/72 px-3 py-2">
           <div className="flex items-center justify-between gap-3">
             <Label>{label}</Label>
             <Badge variant="soft">{field.value}</Badge>
           </div>
           <Slider
-            className="mt-3"
+            className="mt-2"
             min={min}
             max={max}
             step={step}
@@ -491,7 +491,7 @@ function FormSelect({
       control={control}
       name={name}
       render={({ field }) => (
-        <div className="space-y-1.5">
+        <div className="space-y-1">
           <Label htmlFor={id}>{label}</Label>
           <Select value={String(field.value)} onValueChange={field.onChange}>
             <SelectTrigger id={id}>
